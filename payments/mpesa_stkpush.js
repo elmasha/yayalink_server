@@ -80,7 +80,7 @@ app.post("/stk", access, _urlencoded, function (req, res) {
         PartyA: _phoneNumber,
         PartyB: _shortCode, //Till  No.
         PhoneNumber: _phoneNumber,
-        CallBackURL: "https://yayalinkserver-production-4990.up.railway.app/api/payments/stk_callback",
+        CallBackURL: "https://yayalinkserver-production-edaa.up.railway.app/api/payments/stk_callback",
         AccountReference: "Yaya Nanies App",
         TransactionDesc: "_transDec",
       },
@@ -293,7 +293,7 @@ app.post("/stk_register", access, _urlencoded, function (req, res) {
         PartyA: _BPhone,
         PartyB: _shortCode, //Till  No.
         PhoneNumber: _BPhone,
-        CallBackURL: "https://yayalinkserver-production-4990.up.railway.app/api/payments/stk_callback2",
+        CallBackURL: "https://yayalinkserver-production-edaa.up.railway.app/api/payments/stk_callback2",
         AccountReference: "Yaya Bureau App ",
         TransactionDesc: "_transDec",
       },
