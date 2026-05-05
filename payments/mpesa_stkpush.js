@@ -293,7 +293,7 @@ app.post("/stk_register", access, _urlencoded, function (req, res) {
         PartyA: _BPhone,
         PartyB: _shortCode, //Till  No.
         PhoneNumber: _BPhone,
-        CallBackURL: "https://yayalinkserver-production-edaa.up.railway.app/api/payments/stk_callback2",
+        CallBackURL: "https://yayalinkserver-production-edaa.up.railway.app/api/payments/stk_register_callback",
         AccountReference: "Yaya Bureau App ",
         TransactionDesc: "_transDec",
       },
@@ -319,7 +319,7 @@ const middleware2 = (req, res, next) => {
 };
 
 ///------STK_CALLBACK-----///
-app.post("/stk_callback2", _urlencoded, middleware2, async (req, res) => {
+app.post("/stk_register_callback", _urlencoded, middleware2, async (req, res) => {
   try {
     const callback = req.body.Body.stkCallback;
 
@@ -383,7 +383,7 @@ app.post("/stk_callback2", _urlencoded, middleware2, async (req, res) => {
 });
 
 ///----STK QUERY ---//
-app.post("/stk/query2", access, _urlencoded, function (req, res, next) {
+app.post("/stk_register/query", access, _urlencoded, function (req, res, next) {
   let _checkoutRequestId = req.body.checkoutRequestId;
 
   auth = "Bearer " + req.access_token;
