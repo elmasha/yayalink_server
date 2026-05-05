@@ -264,9 +264,9 @@ app.post("/stk_register", access, _urlencoded, function (req, res) {
   let endpoint = "https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest";
   let auth = "Bearer " + req.access_token;
 
-  let _shortCode = "4087943";
+  let _shortCode = process.env.MP_SHORTCODE_DEV;
   let _passKey =
-    "bb2724f53956f05ca6772b8a79e193c88953048d221b8f4f47d96c9b8f641dbb";
+  process.env.MP_PASSKEY_DEV;
 
   const timeStamp = new Date()
     .toISOString()
