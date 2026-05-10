@@ -171,18 +171,119 @@ exports.getBureauCandidateById = async (req, res) => {
   );
 };
 
-exports.updateCandidate = async (req, res) => {
-  db.query(
-    `UPDATE yaya_candidates SET ? WHERE candidate_id=?`,
-    [req.body, req.params.id],
-    async (err) => {
-      if (err) return res.status(500).json({ message: "Update failed" });
+// controllers/candidates.controller.js
 
-      await redis.del(candidateKey(req.params.id));
-      await redis.del(candidatesAvailableKey());
-      res.json({ message: "Candidate updated" });
+exports.updateCandidate = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!id) {
+      return res.status(400).json({
+        success: false,
+        message: "Candidate ID is required",
+      });
     }
-  );
+
+    const {
+      candidate_name,
+      gender,
+      dob,
+      mobile_no,
+      device_token,
+      profile_image,
+      county,
+      ward,
+      village,
+      next_of_kin,
+      kin_phone_no,
+      experience,
+      user_id,
+      salary,
+      age,
+      bureau_name,
+      salary_period,
+      bureau_no,
+      working_status,
+      status,
+    } = req.body;
+
+    const [result] = await db.query(
+      `
+      UPDATE yaya_candidates
+      SET
+        candidate_name = ?,
+        gender = ?,
+        dob = ?,
+        mobile_no = ?,
+        device_token = ?,
+        profile_image = ?,
+        county = ?,
+        ward = ?,
+        village = ?,
+        next_of_kin = ?,
+        kin_phone_no = ?,
+        experience = ?,
+        user_id = ?,
+        salary = ?,
+        age = ?,
+        bureau_name = ?,
+        salary_period = ?,
+        bureau_no = ?,
+        working_status = ?,
+        status = ?
+      WHERE candidate_id = ?
+      `,
+      [
+        candidate_name,
+        gender,
+        dob,
+        mobile_no,
+        device_token,
+        profile_image || "",
+        county,
+        ward,
+        village,
+        next_of_kin,
+        kin_phone_no,
+        experience,
+        user_id,
+        salary,
+        age,
+        bureau_name,
+        salary_period,
+        bureau_no,
+        working_status || "available",
+        status || "Available",
+        id,
+      ]
+    );
+
+    console.log("Update result:", result);
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Candidate not found or candidate_id is wrong",
+      });
+    }
+
+    await redis.del(candidateKey(id));
+    await redis.del(candidatesAvailableKey());
+
+    return res.status(200).json({
+      success: true,
+      message: "Candidate updated successfully",
+      candidate_id: id,
+    });
+  } catch (error) {
+    console.error("updateCandidate error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to update candidate",
+      error: error.message,
+    });
+  }
 };
 
 /* ✅ Delete Candidate (FIX) */
