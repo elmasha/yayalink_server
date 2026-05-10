@@ -1,5 +1,6 @@
 const db = require("../config/db");
 const redis = require("../config/redis");
+const query = utils.promisify(db.query).bind(db);
 const {
   candidateKey,
   candidatesAvailableKey,
@@ -254,7 +255,7 @@ exports.updateCandidate = async (req, res) => {
         bureau_no,
         working_status || "available",
         status || "Available",
-        id,
+        id, 
       ]
     );
 
