@@ -1,6 +1,6 @@
 const db = require("../config/db");
 const redis = require("../config/redis");
-const query = utils.promisify(db.query).bind(db);
+const query = util.promisify(db.query).bind(db);
 const {
   candidateKey,
   candidatesAvailableKey,
