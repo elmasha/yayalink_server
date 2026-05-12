@@ -106,6 +106,75 @@ exports.getBureau = async (req, res) => {
   }
 };
 
+
+/* ✅ UPDATE BUREAU DEVICE TOKEN ON LOGIN */
+exports.updateBureauDeviceToken = async (req, res) => {
+  const { user_id } = req.params;
+  const { device_token } = req.body;
+
+  if (!user_id) {
+    return res.status(200).json({
+      success: false,
+      message: "Missing user_id",
+    });
+  }
+
+  if (!device_token) {
+    return res.status(200).json({
+      success: false,
+      message: "Missing device_token",
+    });
+  }
+
+  try {
+    db.query(
+      `
+      UPDATE yaya_bureaus
+      SET device_token = ?
+      WHERE user_id = ?
+      `,
+      [device_token, user_id],
+      async (err, result) => {
+        if (err) {
+          console.error("Update bureau device token error:", err);
+
+          return res.status(500).json({
+            success: false,
+            message: "Failed to update device token",
+            error: err.message,
+          });
+        }
+
+        if (!result.affectedRows) {
+          return res.status(200).json({
+            success: false,
+            message: "Bureau not found",
+          });
+        }
+
+        try {
+          await redis.del(bureauKey(user_id));
+        } catch (cacheErr) {
+          console.warn("Redis clear error:", cacheErr.message);
+        }
+
+        return res.status(200).json({
+          success: true,
+          message: "Device token updated successfully",
+        });
+      }
+    );
+  } catch (error) {
+    console.error("Update bureau device token fatal:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: error.message,
+    });
+  }
+};
+
 /* ✅ UPDATE BUREAU */
 exports.updateBureau = async (req, res) => {
   const { user_id } = req.params;

@@ -19,3 +19,4 @@ router.delete("/delete-candidate/:id",  deleteCandidate);
 router.get("/filter", filterCandidates);
 
 module.exports = router;
+

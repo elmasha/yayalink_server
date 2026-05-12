@@ -145,7 +145,73 @@ exports.deleteEmployer = async (req, res) => {
   );
 };
 
+/* ✅ UPDATE EMPLOYER DEVICE TOKEN ON LOGIN */
+exports.updateEmployerDeviceToken = async (req, res) => {
+  const { uid } = req.params;
+  const { device_token } = req.body;
 
+  if (!uid) {
+    return res.status(200).json({
+      success: false,
+      message: "Missing uid",
+    });
+  }
+
+  if (!device_token) {
+    return res.status(200).json({
+      success: false,
+      message: "Missing device_token",
+    });
+  }
+
+  try {
+    db.query(
+      `
+      UPDATE yaya_employers
+      SET device_token = ?
+      WHERE uid = ?
+      `,
+      [device_token, uid],
+      async (err, result) => {
+        if (err) {
+          console.error("Update employer device token error:", err);
+
+          return res.status(500).json({
+            success: false,
+            message: "Failed to update device token",
+            error: err.message,
+          });
+        }
+
+        if (!result.affectedRows) {
+          return res.status(200).json({
+            success: false,
+            message: "Employer not found",
+          });
+        }
+
+        try {
+          await redis.del(employerKey(uid));
+        } catch (cacheErr) {
+          console.warn("Redis clear error:", cacheErr.message);
+        }
+
+        return res.status(200).json({
+          success: true,
+          message: "Employer device token updated successfully",
+        });
+      }
+    );
+  } catch (error) {
+    console.error("Update employer device token fatal:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: error.message,
+    });
+  }
+};
 
 
 

@@ -7,12 +7,14 @@ const {
   deleteEmployer,
   selectCandidate,
   dischargeCandidate,
-  getEmployerCandidates
+  getEmployerCandidates,
+  updateEmployerDeviceToken
 } = require("../controllers/employers.controller");
 
 router.post("/register",  createEmployer);
 router.get("/get-employer/:uid",  getEmployer);
 router.put("/update-employer/:uid",  updateEmployer);
+router.post("/update-device-token/:uid",  updateEmployerDeviceToken);
 router.delete("/delete-employer/:uid",  deleteEmployer);
 router.get(
   "/employers-candidates/:employer_uid",
