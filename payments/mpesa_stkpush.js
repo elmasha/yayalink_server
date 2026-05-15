@@ -81,7 +81,7 @@ app.post("/stk", access, _urlencoded, function (req, res) {
         PartyB: _shortCode, //Till  No.
         PhoneNumber: _phoneNumber,
         CallBackURL: "https://yayalinkserver-production-edaa.up.railway.app/api/payments/stk_callback",
-        AccountReference: "Yaya Nanies App",
+        AccountReference: `YayaLink App ${_UserID}`,
         TransactionDesc: "_transDec",
       },
     },
