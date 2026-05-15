@@ -49,11 +49,11 @@ app.post("/stk", access, _urlencoded, function (req, res) {
   _Username = req.body.User_name;
   plan_days = req.body.plan_days;
 
-  let endpoint = "https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest";
+  let endpoint = "https://api.safaricom.co.ke/mpesa/stkpush/v1/processrequest";
   let auth = "Bearer " + req.access_token;
 
-  let _shortCode = process.env.MP_SHORTCODE_DEV;
-  let _passKey = process.env.MP_PASSKEY_DEV;
+  let _shortCode = process.env.PROD_SHORTCODE_DEV;
+  let _passKey = process.env.PROD_PASSKEY_DEV;
 
   const timeStamp = new Date()
     .toISOString()
@@ -198,9 +198,9 @@ app.post("/stk/query", access, _urlencoded, function (req, res, next) {
 
   auth = "Bearer " + req.access_token;
 
-  let endpoint = "https://sandbox.safaricom.co.ke/mpesa/stkpushquery/v1/query";
-  let _shortCode = process.env.MP_SHORTCODE_DEV;
-  let _passKey = process.env.MP_PASSKEY_DEV;
+  let endpoint = "https://api.safaricom.co.ke/mpesa/stkpushquery/v1/query";
+  let _shortCode = process.env.PROD_SHORTCODE_DEV;
+  let _passKey = process.env.PROD_PASSKEY_DEV;
 
   const timeStamp = new Date()
     .toISOString()
@@ -261,12 +261,12 @@ app.post("/stk_register", access, _urlencoded, function (req, res) {
   _BUiD = req.body.user_id;
   _BfName = req.body.User_name;
 
-  let endpoint = "https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest";
+  let endpoint = "https://api.safaricom.co.ke/mpesa/stkpush/v1/processrequest";
   let auth = "Bearer " + req.access_token;
 
-  let _shortCode = process.env.MP_SHORTCODE_DEV;
+  let _shortCode = process.env.PROD_SHORTCODE_DEV;
   let _passKey =
-  process.env.MP_PASSKEY_DEV;
+  process.env.PROD_PASSKEY_DEV;
 
   const timeStamp = new Date()
     .toISOString()
@@ -388,9 +388,9 @@ app.post("/stk_register/query", access, _urlencoded, function (req, res, next) {
 
   auth = "Bearer " + req.access_token;
 
-  let endpoint = "https://sandbox.safaricom.co.ke/mpesa/stkpushquery/v1/query";
-  let _shortCode = process.env.MP_SHORTCODE_DEV;
-  let _passKey = process.env.MP_PASSKEY_DEV;
+  let endpoint = "https://api.safaricom.co.ke/mpesa/stkpushquery/v1/query";
+  let _shortCode = process.env.PROD_SHORTCODE_DEV;
+  let _passKey = process.env.PROD_PASSKEY_DEV;
 
   const timeStamp = new Date()
     .toISOString()
@@ -433,8 +433,8 @@ app.get("/access_token", access, (req, res) => {
   res.status(200).json({ access_token: req.access_token });
 });
 
-let consumer_key = process.env.MP_CONSUMER_KEY_DEV;
-let consumer_secret = process.env.MP_SECRET_KEY_DEV;
+let consumer_key = process.env.PROD_CONSUMER_KEY_DEV;
+let consumer_secret = process.env.PROD_SECRET_KEY_DEV;
 function access(res, req, next) {
   let endpoint =
     "https://api.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials";
