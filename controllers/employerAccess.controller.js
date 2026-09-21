@@ -329,14 +329,14 @@ exports.selectCandidate = async (req, res) => {
       );
     });
 
-    if (countRows[0].total >= 3) {
+    if (countRows[0].total >= 1) {
       try {
         await sendNotification({
           user_uid: employer_uid,
           user_type: "EMPLOYER",
           title: "SELECTION LIMIT REACHED",
           message:
-            "You have reached the maximum number of selected candidates (3). Please manage your selections before adding more.",
+            "You have reached the maximum number of selected candidates (1). Please manage your selections before adding more.",
           type: "SYSTEM",
         });
       } catch (notifyErr) {
