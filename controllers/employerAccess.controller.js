@@ -3,13 +3,23 @@ const redis = require("../config/redis");
 const { isGracePeriodValid } = require("../utils/gracePeriod");
 const { sendNotification } = require("../utils/notify");
 const { getDaysRemaining } = require("../utils/paymentUtils");
+const {
+  candidateKey,
+  candidatesAvailableKey,
+  candidatesCacheKey,
+  employerKey,
+} = require("../utils/cacheKeys");
+const { deleteKeysByPattern } = require("../utils/redisHelpers");
 
 const accessKey = (uid) => `employer:access:${uid}`;
+const PAYMENT_CACHE_KEY = (uid) => `employer:payment:${uid}`;
 
+/* ─────────────────────────────────────────────
+   CHECK EMPLOYER ACCESS
+   ───────────────────────────────────────────── */
 exports.checkEmployerAccess = async (req, res) => {
   const { uid } = req.params;
 
-  /* 🔴 Guard */
   if (!uid) {
     return res.status(200).json({
       allowed: false,
@@ -60,7 +70,7 @@ exports.checkEmployerAccess = async (req, res) => {
       };
     }
 
-    /* ⏰ Access expired */
+    /* ⏰ Check expiry */
     else {
       const now = new Date();
       const expiry = new Date(rows[0].access_expires_at);
@@ -91,7 +101,8 @@ exports.checkEmployerAccess = async (req, res) => {
         /* 🧹 Clear Redis */
         try {
           await redis.del(accessKey(uid));
-          await redis.del(`employer:${uid}`);
+          await redis.del(employerKey(uid));
+          await redis.del(PAYMENT_CACHE_KEY(uid));
         } catch (redisErr) {
           console.warn("Redis DEL failed:", redisErr.message);
         }
@@ -107,11 +118,7 @@ exports.checkEmployerAccess = async (req, res) => {
 
     /* 🔹 3. Cache response */
     try {
-      await redis.setEx(
-        accessKey(uid),
-        300, // 5 minutes
-        JSON.stringify(response)
-      );
+      await redis.setEx(accessKey(uid), 300, JSON.stringify(response));
     } catch (redisErr) {
       console.warn("Redis SET failed:", redisErr.message);
     }
@@ -126,8 +133,9 @@ exports.checkEmployerAccess = async (req, res) => {
   }
 };
 
-const PAYMENT_CACHE_KEY = (uid) => `employer:payment:${uid}`;
-
+/* ─────────────────────────────────────────────
+   CHECK EMPLOYER PAYMENT STATUS
+   ───────────────────────────────────────────── */
 exports.checkEmployerPaymentStatus = async (req, res) => {
   const { uid } = req.params;
 
@@ -154,7 +162,7 @@ exports.checkEmployerPaymentStatus = async (req, res) => {
     const rows = await new Promise((resolve, reject) => {
       db.query(
         `
-        SELECT mpesa_receipt, access_expires_at
+        SELECT mpesa_receipt, access_expires_at, name
         FROM yaya_employers
         WHERE uid = ?
         LIMIT 1
@@ -183,17 +191,18 @@ exports.checkEmployerPaymentStatus = async (req, res) => {
         message: "PAYMENT_REQUIRED",
       };
 
-      /* ✅ Send notification */
-          const message = `Hi ${rows[0].name || "Employer"}, your payment is due. Your access has been updated.`;
-          await sendNotification({
-            user_uid: uid,
-            user_type: "EMPLOYER",
-            title: "PAYMENT REQUIRED",
-            message,
-            type: "PAYMENT",
-          });
+      try {
+        await sendNotification({
+          user_uid: uid,
+          user_type: "EMPLOYER",
+          title: "PAYMENT REQUIRED",
+          message: `Hi ${rows[0].name || "Employer"}, your payment is due. Your access has been updated.`,
+          type: "PAYMENT",
+        });
+      } catch (notifyErr) {
+        console.warn("Notification failed:", notifyErr.message);
+      }
     }
-    
 
     /* 🔍 Check expiry */
     else {
@@ -205,7 +214,6 @@ exports.checkEmployerPaymentStatus = async (req, res) => {
 
       /* ⏰ Expired */
       if (daysRemaining <= 0) {
-        /* 🔥 Revoke payment */
         await new Promise((resolve, reject) => {
           db.query(
             `
@@ -221,10 +229,9 @@ exports.checkEmployerPaymentStatus = async (req, res) => {
           );
         });
 
-        /* 🧹 Clear cache */
         try {
           await redis.del(PAYMENT_CACHE_KEY(uid));
-          await redis.del(`employer:access:${uid}`);
+          await redis.del(accessKey(uid));
         } catch (_) {}
 
         response = {
@@ -233,16 +240,17 @@ exports.checkEmployerPaymentStatus = async (req, res) => {
           message: "GRACE_PERIOD_EXPIRED",
         };
 
-        /* ✅ Send notification */
-        const message = `Hi ${rows[0].name || "Employer"}, your payment has expired and access revoked. Please renew to continue accessing candidates.`;
-        await sendNotification({
-          user_uid: uid,
-          user_type: "EMPLOYER",
-          title: "ACCESS REVOKED",
-          message,
-          type: "PAYMENT",
-        });
-
+        try {
+          await sendNotification({
+            user_uid: uid,
+            user_type: "EMPLOYER",
+            title: "ACCESS REVOKED",
+            message: `Hi ${rows[0].name || "Employer"}, your payment has expired and access revoked. Please renew to continue accessing candidates.`,
+            type: "PAYMENT",
+          });
+        } catch (notifyErr) {
+          console.warn("Notification failed:", notifyErr.message);
+        }
       } else {
         response = {
           paid: true,
@@ -255,7 +263,7 @@ exports.checkEmployerPaymentStatus = async (req, res) => {
     try {
       await redis.setEx(
         PAYMENT_CACHE_KEY(uid),
-        300, // 5 minutes
+        300,
         JSON.stringify(response)
       );
     } catch (_) {}
@@ -271,7 +279,9 @@ exports.checkEmployerPaymentStatus = async (req, res) => {
   }
 };
 
-
+/* ─────────────────────────────────────────────
+   SELECT CANDIDATE
+   ───────────────────────────────────────────── */
 exports.selectCandidate = async (req, res) => {
   const { employer_uid, candidate_id } = req.body;
 
@@ -293,10 +303,7 @@ exports.selectCandidate = async (req, res) => {
         LIMIT 1
         `,
         [employer_uid],
-        (err, rows) => {
-          if (err) return reject(err);
-          resolve(rows);
-        }
+        (err, rows) => (err ? reject(err) : resolve(rows))
       );
     });
 
@@ -318,28 +325,29 @@ exports.selectCandidate = async (req, res) => {
         WHERE employer_uid = ?
         `,
         [employer_uid],
-        (err, rows) => {
-          if (err) return reject(err);
-          resolve(rows);
-        }
+        (err, rows) => (err ? reject(err) : resolve(rows))
       );
     });
 
-   
     if (countRows[0].total >= 3) {
-      sendNotification({
-        user_uid: employer_uid,
-        user_type: "EMPLOYER",
-        title: "SELECTION LIMIT REACHED",
-        message: "You have reached the maximum number of selected candidates (3). Please manage your selections before adding more.",
-        type: "SYSTEM",
-      });
+      try {
+        await sendNotification({
+          user_uid: employer_uid,
+          user_type: "EMPLOYER",
+          title: "SELECTION LIMIT REACHED",
+          message:
+            "You have reached the maximum number of selected candidates (3). Please manage your selections before adding more.",
+          type: "SYSTEM",
+        });
+      } catch (notifyErr) {
+        console.warn("Notification failed:", notifyErr.message);
+      }
+
       return res.status(200).json({
         success: false,
         message: "SELECTION_LIMIT_REACHED",
       });
     }
-
 
     /* 🔹 3. Check candidate availability */
     const candidateRows = await new Promise((resolve, reject) => {
@@ -351,10 +359,7 @@ exports.selectCandidate = async (req, res) => {
         LIMIT 1
         `,
         [candidate_id],
-        (err, rows) => {
-          if (err) return reject(err);
-          resolve(rows);
-        }
+        (err, rows) => (err ? reject(err) : resolve(rows))
       );
     });
 
@@ -384,6 +389,7 @@ exports.selectCandidate = async (req, res) => {
           employer_city   = ?,
           employer_county = ?,
           status          = 'Unavailable',
+          working_status  = 'unavailable',
           date_selected   = NOW()
         WHERE candidate_id = ?
           AND status = 'Available'
@@ -405,11 +411,35 @@ exports.selectCandidate = async (req, res) => {
       );
     });
 
-    /* 🔹 5. Clear caches */
+    /* 🔹 5. Clear ALL relevant caches */
     try {
-      await redis.del(`candidate:${candidate_id}`);
+      // Individual candidate
+      await redis.del(candidateKey(candidate_id));
+
+      // Public lists
+      await redis.del(candidatesAvailableKey());
+      await redis.del(candidatesCacheKey());
+
+      // Employer caches
+      await redis.del(employerKey(employer_uid));
       await redis.del(`employer:candidates:${employer_uid}`);
-    } catch (_) {}
+      await redis.del(accessKey(employer_uid));
+      await redis.del(PAYMENT_CACHE_KEY(employer_uid));
+
+      // All filter-cache entries (wildcard scan)
+      const removedFilters = await deleteKeysByPattern("candidates:filter:*");
+      if (removedFilters > 0) {
+        console.log(`🧹 Cleared ${removedFilters} filter cache entries`);
+      }
+
+      // All candidate:* entries (individual + bureau lists)
+      const removedCandidates = await deleteKeysByPattern("candidate:*");
+      if (removedCandidates > 0) {
+        console.log(`🧹 Cleared ${removedCandidates} candidate cache entries`);
+      }
+    } catch (cacheErr) {
+      console.warn("Redis clear error:", cacheErr.message);
+    }
 
     return res.status(200).json({
       success: true,
