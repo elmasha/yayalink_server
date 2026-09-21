@@ -6,8 +6,71 @@ const {
   candidatesCacheKey,
   filterCacheKey,
 } = require("../utils/cacheKeys");
+const { computeBureauStatus } = require("../utils/subscription");
 
+/* ─────────────── SUBSCRIPTION GUARD ─────────────── */
 
+/**
+ * Verifies the bureau that owns this request has an active subscription.
+ * Returns a promise resolving to:
+ *   { ok: true }                     → continue
+ *   { ok: false, code, message }     → block with 402
+ */
+function checkBureauSubscription(user_id) {
+  return new Promise((resolve) => {
+    if (!user_id) {
+      // No user_id provided — treat as non-bureau request (public read, etc.)
+      return resolve({ ok: true, skipped: true });
+    }
+
+    db.query(
+      `SELECT user_id, trial_ends_at, access_expires_at, subscription_status
+       FROM yaya_bureaus WHERE user_id = ? LIMIT 1`,
+      [user_id],
+      (err, rows) => {
+        if (err) {
+          console.error("checkBureauSubscription DB error:", err);
+          return resolve({
+            ok: false,
+            code: "SERVER_ERROR",
+            message: "Could not verify subscription. Try again.",
+          });
+        }
+
+        // If the user_id isn't a bureau, allow it (could be an employer adding their own records)
+        if (!rows || rows.length === 0) {
+          return resolve({ ok: true, skipped: true });
+        }
+
+        const status = computeBureauStatus(rows[0]);
+
+        if (status.isExpired) {
+          return resolve({
+            ok: false,
+            code: "SUBSCRIPTION_EXPIRED",
+            message:
+              "Your subscription has expired. Please renew to continue managing candidates.",
+            subscription: {
+              status: status.status,
+              days_left: 0,
+              expired: true,
+            },
+          });
+        }
+
+        return resolve({
+          ok: true,
+          grace: status.isGrace,
+          subscription: {
+            status: status.status,
+            days_left: status.daysLeft,
+            is_grace: status.isGrace,
+          },
+        });
+      }
+    );
+  });
+}
 
 /* ✅ CREATE CANDIDATE */
 exports.createCandidate = async (req, res) => {
@@ -40,6 +103,18 @@ exports.createCandidate = async (req, res) => {
   if (!candidate_name || !mobile_no || !gender || !county) {
     return res.status(400).json({
       message: "candidate_name, mobile_no, gender and county are required",
+    });
+  }
+
+  // 🔒 Subscription check
+  const guard = await checkBureauSubscription(user_id);
+
+  if (!guard.ok) {
+    return res.status(402).json({
+      success: false,
+      reason: guard.code,
+      message: guard.message,
+      subscription: guard.subscription,
     });
   }
 
@@ -87,7 +162,7 @@ exports.createCandidate = async (req, res) => {
           residence,
           village,
           ward,
-          county,
+          county, // 👈 consider TRIM() here later
           bureau_name,
           bureau_no,
           experience,
@@ -106,10 +181,20 @@ exports.createCandidate = async (req, res) => {
     });
 
     // 🔥 Invalidate Redis caches
-   // await redis.del(candidatesCacheKey);
-  
+    try {
+      await redis.del(candidatesAvailableKey());
+      if (filterCacheKey) {
+        // Optional: pattern-based invalidation not supported by default Redis client.
+        // If you have a scan-based helper, call it here.
+      }
+    } catch (cacheErr) {
+      console.warn("Redis clear error:", cacheErr.message);
+    }
+
     return res.status(201).json({
+      success: true,
       message: "Candidate added successfully",
+      subscription: guard.subscription || null,
     });
   } catch (error) {
     console.error("❌ Create candidate error:", error);
@@ -117,9 +202,7 @@ exports.createCandidate = async (req, res) => {
   }
 };
 
-
-
-
+/* ✅ AVAILABLE CANDIDATES (public read) */
 exports.getAvailableCandidates = async (req, res) => {
   const key = candidatesAvailableKey();
 
@@ -136,6 +219,7 @@ exports.getAvailableCandidates = async (req, res) => {
   );
 };
 
+/* ✅ GET CANDIDATE BY CANDIDATE_ID (public read) */
 exports.getCandidateById = async (req, res) => {
   const key = candidateKey(req.params.id);
 
@@ -147,13 +231,14 @@ exports.getCandidateById = async (req, res) => {
     [req.params.id],
     async (err, rows) => {
       if (err) return res.status(500).json({ message: "Fetch failed" });
+      if (!rows.length) return res.status(404).json({ message: "Not found" });
       await redis.setEx(key, 600, JSON.stringify(rows[0]));
       res.json(rows[0]);
     }
   );
 };
 
-
+/* ✅ GET CANDIDATES BY BUREAU USER_ID */
 exports.getBureauCandidateById = async (req, res) => {
   const key = candidateKey(req.params.user_id);
 
@@ -165,14 +250,16 @@ exports.getBureauCandidateById = async (req, res) => {
     [req.params.user_id],
     async (err, rows) => {
       if (err) return res.status(500).json({ message: "Fetch failed" });
+      // NOTE: originally returned rows[0] — that's a bug for bureaus with multiple candidates.
+      // Returning the array is correct.
       await redis.setEx(key, 300, JSON.stringify(rows));
-      res.json(rows[0]);
+      res.json(rows);
     }
   );
 };
 
-// UPDATE CANDIDATE
-exports.updateCandidate = (req, res) => {
+/* ✅ UPDATE CANDIDATE */
+exports.updateCandidate = async (req, res) => {
   const { id } = req.params;
 
   console.log("UPDATE CANDIDATE ID:", id);
@@ -207,6 +294,25 @@ exports.updateCandidate = (req, res) => {
     working_status,
     status,
   } = req.body;
+
+  // 🔒 Subscription check — user_id is required to authorize the action
+  if (!user_id) {
+    return res.status(400).json({
+      success: false,
+      message: "user_id is required to authorize this update",
+    });
+  }
+
+  const guard = await checkBureauSubscription(user_id);
+
+  if (!guard.ok) {
+    return res.status(402).json({
+      success: false,
+      reason: guard.code,
+      message: guard.message,
+      subscription: guard.subscription,
+    });
+  }
 
   const sql = `
     UPDATE yaya_candidates
@@ -279,12 +385,9 @@ exports.updateCandidate = (req, res) => {
       });
     }
 
-    // Optional Redis cache clear
     try {
-      if (typeof redis !== "undefined") {
-        await redis.del(candidateKey(id));
-        await redis.del(candidatesAvailableKey());
-      }
+      await redis.del(candidateKey(id));
+      await redis.del(candidatesAvailableKey());
     } catch (cacheErr) {
       console.log("Redis clear error:", cacheErr.message);
     }
@@ -297,23 +400,48 @@ exports.updateCandidate = (req, res) => {
   });
 };
 
-/* ✅ Delete Candidate (FIX) */
+/* ✅ DELETE CANDIDATE */
 exports.deleteCandidate = async (req, res) => {
+  const { id } = req.params;
+  const user_id = req.query.user_id || req.body.user_id;
+
+  if (!user_id) {
+    return res.status(400).json({
+      success: false,
+      message: "user_id is required to authorize this delete",
+    });
+  }
+
+  const guard = await checkBureauSubscription(user_id);
+
+  if (!guard.ok) {
+    return res.status(402).json({
+      success: false,
+      reason: guard.code,
+      message: guard.message,
+      subscription: guard.subscription,
+    });
+  }
+
   db.query(
     `DELETE FROM yaya_candidates WHERE candidate_id=?`,
-    [req.params.id],
+    [id],
     async (err, result) => {
       if (err) return res.status(500).json({ message: "Delete failed" });
       if (result.affectedRows === 0)
         return res.status(404).json({ message: "Candidate not found" });
 
-      await redis.del(candidateKey(req.params.id));
-      await redis.del(candidatesAvailableKey());
-      res.json({ message: "Candidate deleted successfully" });
+      try {
+        await redis.del(candidateKey(id));
+        await redis.del(candidatesAvailableKey());
+      } catch (cacheErr) {
+        console.warn("Redis clear error:", cacheErr.message);
+      }
+
+      res.json({ success: true, message: "Candidate deleted successfully" });
     }
   );
 };
-
 
 /**
  * Employer candidate filtering
@@ -331,7 +459,7 @@ exports.filterCandidates = async (req, res) => {
       min_age,
       max_age,
       min_experience,
-      max_experience
+      max_experience,
     } = req.query;
 
     const cacheKey = `candidates:filter:${JSON.stringify(req.query)}`;
@@ -355,8 +483,9 @@ exports.filterCandidates = async (req, res) => {
       params.push(gender);
     }
 
+    // ✅ Case + whitespace tolerant county match
     if (county) {
-      sql += " AND county = ?";
+      sql += " AND LOWER(TRIM(county)) = LOWER(TRIM(?))";
       params.push(county);
     }
 
@@ -376,34 +505,34 @@ exports.filterCandidates = async (req, res) => {
     }
 
     if (min_salary) {
-      sql += " AND salary >= ?";
-      params.push(min_salary);
+      sql += " AND CAST(salary AS UNSIGNED) >= ?";
+      params.push(Number(min_salary));
     }
 
     if (max_salary) {
-      sql += " AND salary <= ?";
-      params.push(max_salary);
+      sql += " AND CAST(salary AS UNSIGNED) <= ?";
+      params.push(Number(max_salary));
     }
 
     if (min_age) {
       sql += " AND TIMESTAMPDIFF(YEAR, dob, CURDATE()) >= ?";
-      params.push(min_age);
+      params.push(Number(min_age));
     }
 
     if (max_age) {
       sql += " AND TIMESTAMPDIFF(YEAR, dob, CURDATE()) <= ?";
-      params.push(max_age);
+      params.push(Number(max_age));
     }
 
-    /* ✅ EXPERIENCE FILTER (NUMERIC) */
+    // ✅ Experience filter — cast to integer, ignore non-numeric
     if (min_experience) {
-      sql += " AND experience >= ?";
-      params.push(min_experience);
+      sql += " AND CAST(experience AS UNSIGNED) >= ?";
+      params.push(Number(min_experience));
     }
 
     if (max_experience) {
-      sql += " AND experience <= ?";
-      params.push(max_experience);
+      sql += " AND CAST(experience AS UNSIGNED) <= ?";
+      params.push(Number(max_experience));
     }
 
     sql += " ORDER BY created_at DESC";
@@ -417,12 +546,8 @@ exports.filterCandidates = async (req, res) => {
       await redis.setEx(cacheKey, 300, JSON.stringify(rows));
       res.json(rows);
     });
-
   } catch (error) {
     console.error("❌ Filter candidates error:", error);
     res.status(500).json({ message: "Server error" });
   }
 };
-
-
-

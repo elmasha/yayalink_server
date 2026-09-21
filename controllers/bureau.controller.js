@@ -1,6 +1,11 @@
 const db = require("../config/db");
 const redis = require("../config/redis");
 const { bureauKey } = require("../utils/cacheKeys");
+const {
+  computeBureauStatus,
+  TRIAL_DAYS,
+  SUBSCRIPTION_DAYS,
+} = require("../utils/subscription");
 
 /* ✅ REGISTER BUREAU */
 exports.createBureau = async (req, res) => {
@@ -18,23 +23,28 @@ exports.createBureau = async (req, res) => {
     county,
     postal_code,
     bureau_image,
-    device_token
+    device_token,
   } = req.body;
 
   if (!user_id || !bureau_name || !phone_no) {
     return res.status(200).json({
       success: false,
-      message: "Missing required fields"
+      message: "Missing required fields",
     });
   }
 
   try {
+    // Trial starts at creation, ends 14 days later
+    const trialEndsAt = new Date();
+    trialEndsAt.setDate(trialEndsAt.getDate() + TRIAL_DAYS);
+
     db.query(
       `INSERT INTO yaya_bureaus (
         user_id, bureau_name, name, email, phone_no, id_no,
         box_no, building, street_name, city, county,
-        postal_code, bureau_image, device_token, user_state
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        postal_code, bureau_image, device_token, user_state,
+        trial_ends_at, subscription_status
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [
         user_id,
         bureau_name,
@@ -50,14 +60,16 @@ exports.createBureau = async (req, res) => {
         postal_code,
         bureau_image,
         device_token,
-        "Bureau"
+        "Bureau",
+        trialEndsAt,
+        "TRIAL",
       ],
       async (err) => {
         if (err) {
           if (err.code === "ER_DUP_ENTRY") {
             return res.status(200).json({
               success: false,
-              message: "Bureau already registered"
+              message: "Bureau already registered",
             });
           }
 
@@ -69,7 +81,8 @@ exports.createBureau = async (req, res) => {
 
         res.status(200).json({
           success: true,
-          message: "Bureau registered successfully"
+          message: "Bureau registered successfully",
+          trial_ends_at: trialEndsAt,
         });
       }
     );
@@ -93,11 +106,27 @@ exports.getBureau = async (req, res) => {
       [user_id],
       async (err, rows) => {
         if (err) return res.status(500).json({ message: "DB error" });
-        if (!rows.length)
-          return res.status(200).json({ exists: false });
+        if (!rows.length) return res.status(200).json({ exists: false });
 
-        await redis.setEx(key, 600, JSON.stringify(rows[0]));
-        res.json(rows[0]);
+        const bureau = rows[0];
+        const status = computeBureauStatus(bureau);
+
+        const payload = {
+          ...bureau,
+          subscription: {
+            status: status.status,
+            days_left: status.daysLeft,
+            expires_at: status.expiresAt,
+            is_trial: status.status === "TRIAL",
+            is_active: status.isActive,
+            is_grace: status.isGrace,
+            is_expired: status.isExpired,
+          },
+        };
+
+        // Cache for only 60s so subscription status stays fresh
+        await redis.setEx(key, 60, JSON.stringify(payload));
+        res.json(payload);
       }
     );
   } catch (error) {
@@ -105,7 +134,6 @@ exports.getBureau = async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 };
-
 
 /* ✅ UPDATE BUREAU DEVICE TOKEN ON LOGIN */
 exports.updateBureauDeviceToken = async (req, res) => {
@@ -128,16 +156,11 @@ exports.updateBureauDeviceToken = async (req, res) => {
 
   try {
     db.query(
-      `
-      UPDATE yaya_bureaus
-      SET device_token = ?
-      WHERE user_id = ?
-      `,
+      `UPDATE yaya_bureaus SET device_token = ? WHERE user_id = ?`,
       [device_token, user_id],
       async (err, result) => {
         if (err) {
           console.error("Update bureau device token error:", err);
-
           return res.status(500).json({
             success: false,
             message: "Failed to update device token",
@@ -166,7 +189,6 @@ exports.updateBureauDeviceToken = async (req, res) => {
     );
   } catch (error) {
     console.error("Update bureau device token fatal:", error);
-
     return res.status(500).json({
       success: false,
       message: "Server error",
@@ -198,7 +220,7 @@ exports.updateBureau = async (req, res) => {
   }
 };
 
-
+/* ✅ GET BUREAU PAYMENT / SUBSCRIPTION STATUS */
 // GET /api/bureaus/payment-status/:user_id
 exports.getBureauPaymentStatus = async (req, res) => {
   const { user_id } = req.params;
@@ -206,116 +228,122 @@ exports.getBureauPaymentStatus = async (req, res) => {
   if (!user_id) {
     return res.status(200).json({
       paid: false,
-      message: "INVALID_USER_ID"
+      message: "INVALID_USER_ID",
     });
   }
 
   try {
-    /* 🔹 1. Optional: Check Redis cache first (high performance) */
     const cacheKey = `${bureauKey(user_id)}:payment_status`;
     try {
       const cached = await redis.get(cacheKey);
-      if (cached) {
-        return res.status(200).json(JSON.parse(cached));
-      }
+      if (cached) return res.status(200).json(JSON.parse(cached));
     } catch (e) {
       console.warn("Redis error:", e.message);
     }
 
-    /* 🔹 2. Fetch bureau from DB */
     db.query(
-      `
-      SELECT mpesa_receipt, payment_date, user_state
-      FROM yaya_bureaus
-      WHERE user_id = ?
-      LIMIT 1
-      `,
+      `SELECT mpesa_receipt, payment_date, trial_ends_at,
+              access_expires_at, subscription_status, last_payment_amount
+       FROM yaya_bureaus WHERE user_id = ? LIMIT 1`,
       [user_id],
       async (err, rows) => {
         if (err) {
           console.error("DB Error:", err);
           return res.status(500).json({
             paid: false,
-            message: "SERVER_ERROR"
+            message: "SERVER_ERROR",
           });
         }
 
-        /* ❌ Bureau not found */
         if (!rows || rows.length === 0) {
           return res.status(200).json({
             paid: false,
-            message: "BUREAU_NOT_FOUND"
+            message: "BUREAU_NOT_FOUND",
           });
         }
 
         const bureau = rows[0];
+        const status = computeBureauStatus(bureau);
 
-        /* ❌ Not paid yet */
-        if (!bureau.mpesa_receipt || !bureau.payment_date) {
-          const response = {
-            paid: false,
-            user_state: "INACTIVE",
-            message: "PAYMENT_REQUIRED"
-          };
+        const response = {
+          paid: status.isActive,
+          subscription_status: status.status,
+          days_left: status.daysLeft,
+          expires_at: status.expiresAt,
+          is_trial: status.status === "TRIAL",
+          is_grace: status.isGrace,
+          is_expired: status.isExpired,
+          last_payment_amount: bureau.last_payment_amount,
+          message:
+            status.status === "TRIAL"
+              ? "TRIAL_ACTIVE"
+              : status.status === "ACTIVE"
+              ? "SUBSCRIPTION_ACTIVE"
+              : status.status === "GRACE"
+              ? "GRACE_PERIOD"
+              : "SUBSCRIPTION_EXPIRED",
+        };
 
-          // Cache for 30 seconds (avoid DB spam)
-          try {
-            await redis.setEx(cacheKey, 30, JSON.stringify(response));
-          } catch (e) {}
+        // Cache 30s while trial/active, 5min when expired
+        const ttl = status.isExpired ? 300 : 30;
+        try {
+          await redis.setEx(cacheKey, ttl, JSON.stringify(response));
+        } catch (e) {}
 
-          return res.status(200).json(response);
-        }
-
-        /* ✅ Paid → Activate account if not already */
-        if (bureau.user_state !== "ACTIVE") {
-          db.query(
-            `
-            UPDATE yaya_bureaus
-            SET user_state = 'ACTIVE'
-            WHERE user_id = ?
-            `,
-            [user_id],
-            async (updateErr) => {
-              if (updateErr) {
-                console.error("Activation error:", updateErr);
-              }
-
-              const response = {
-                paid: true,
-                user_state: "ACTIVE",
-                message: "ACCOUNT_ACTIVATED"
-              };
-
-              // Cache for 5 minutes
-              try {
-                await redis.setEx(cacheKey, 300, JSON.stringify(response));
-              } catch (e) {}
-
-              return res.status(200).json(response);
-            }
-          );
-        } else {
-          /* ✅ Already active */
-          const response = {
-            paid: true,
-            user_state: "ACTIVE",
-            message: "ALREADY_ACTIVE"
-          };
-
-          // Cache for 5 minutes
-          try {
-            await redis.setEx(cacheKey, 300, JSON.stringify(response));
-          } catch (e) {}
-
-          return res.status(200).json(response);
-        }
+        return res.status(200).json(response);
       }
     );
   } catch (error) {
     console.error("Payment status fatal error:", error);
     return res.status(500).json({
       paid: false,
-      message: "SERVER_ERROR"
+      message: "SERVER_ERROR",
     });
   }
+};
+
+/* ✅ RENEW BUREAU SUBSCRIPTION (called after successful STK) */
+// This is invoked from your payments controller callback after M-Pesa confirms.
+exports.activateBureauSubscription = (user_id, amount, receipt, callback) => {
+  db.query(
+    `SELECT access_expires_at FROM yaya_bureaus WHERE user_id = ? LIMIT 1`,
+    [user_id],
+    (err, rows) => {
+      if (err) return callback(err);
+      if (!rows || rows.length === 0)
+        return callback(new Error("BUREAU_NOT_FOUND"));
+
+      // Extend from max(now, current_expiry) so early renewals stack
+      const now = new Date();
+      const current = rows[0].access_expires_at
+        ? new Date(rows[0].access_expires_at)
+        : null;
+
+      const base = current && current > now ? current : now;
+      const newExpiry = new Date(base);
+      newExpiry.setDate(newExpiry.getDate() + SUBSCRIPTION_DAYS);
+
+      db.query(
+        `UPDATE yaya_bureaus
+         SET access_expires_at = ?,
+             subscription_status = 'ACTIVE',
+             user_state = 'ACTIVE',
+             mpesa_receipt = ?,
+             payment_date = NOW(),
+             last_payment_amount = ?
+         WHERE user_id = ?`,
+        [newExpiry, receipt, amount, user_id],
+        async (updateErr) => {
+          if (updateErr) return callback(updateErr);
+
+          try {
+            await redis.del(bureauKey(user_id));
+            await redis.del(`${bureauKey(user_id)}:payment_status`);
+          } catch (e) {}
+
+          callback(null, { expires_at: newExpiry });
+        }
+      );
+    }
+  );
 };
