@@ -21,6 +21,7 @@ app.use("/api/users", require("./routes/users.routes"));
  app.use("/api/payments", require("./payments/mpesa_stkpush"));
  app.use("/api/counties", require("./routes/counties.routes"));
 app.use("/api/employer-access", require("./routes/employerAccess.routes"));
+app.use("/api/user-role", require("./routes/userRole.routes"));
 
 // app.use("/api/payments", require("./routes/payments.routes"));
 // app.use("/api/feedback", require("./routes/feedback.routes"));
