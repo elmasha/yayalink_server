@@ -1,6 +1,6 @@
 const router = require("express").Router();
 const controller = require("../controllers/bureau.controller");
-const candidateController = require("../controllers/candidate.controller");
+const candidateController = require("../controllers/candidates.controller");
 const { requireActiveBureau } = require("../middleware/requireActiveBureau");
 
 /* ─────────────── BUREAU ACCOUNT ─────────────── */
