@@ -1,25 +1,42 @@
-const express = require("express");
-const router = express.Router();
-
+const router = require("express").Router();
 const admin = require("../controllers/admin.controller");
+// const { requireAdmin } = require("../middleware/requireAdmin");
 
-/* DASHBOARD */
-router.get("/dashboard", admin.getDashboardSummary);
+// /* ─── Auth ─── */
+// router.use(requireAdmin);
 
-/* USERS */
+/* ─── Dashboard ─── */
+router.get("/dashboard/summary", admin.getDashboardSummary);
+router.get("/dashboard/revenue-chart", admin.getRevenueChart);
+router.get("/dashboard/signups-chart", admin.getSignupsChart);
+router.get("/dashboard/top-counties", admin.getTopCounties);
+
+/* ─── Employers ─── */
 router.get("/employers", admin.getAllEmployers);
-router.get("/bureaus", admin.getAllBureaus);
-router.get("/candidates", admin.getAllCandidates);
+router.get("/employers/:uid", admin.getEmployerDetail);
+router.put("/employers/:uid", admin.updateEmployer);
+router.post("/employers/:uid/suspend", admin.suspendEmployer);
+router.delete("/employers/:uid", admin.deleteEmployer);
 
-/* PAYMENTS */
+/* ─── Bureaus ─── */
+router.get("/bureaus", admin.getAllBureaus);
+router.get("/bureaus/:uid", admin.getBureauDetail);
+router.put("/bureaus/:uid", admin.updateBureau);
+router.post("/bureaus/:uid/suspend", admin.suspendBureau);
+router.delete("/bureaus/:uid", admin.deleteBureau);
+
+/* ─── Candidates ─── */
+router.get("/candidates", admin.getAllCandidates);
+router.get("/candidates/search", admin.searchCandidates);
+router.get("/candidates/:id", admin.getCandidateDetail);
+router.put("/candidates/:id", admin.updateCandidate);
+router.delete("/candidates/:id", admin.deleteCandidate);
+
+/* ─── Payments ─── */
 router.get("/payments", admin.getAllPayments);
 
-/* DELETE */
-router.delete("/candidate/:id", admin.deleteCandidate);
-router.delete("/employer/:uid", admin.deleteEmployer);
-router.delete("/bureau/:uid", admin.deleteBureau);
-
-/* SEARCH */
-router.get("/search/candidates", admin.searchCandidates);
+/* ─── Notifications ─── */
+router.post("/notify/user", admin.notifyUser);
+router.post("/notify/broadcast", admin.broadcast);
 
 module.exports = router;
