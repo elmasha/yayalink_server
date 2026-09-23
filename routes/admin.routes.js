@@ -45,4 +45,12 @@ router.post("/notify/broadcast", admin.broadcast);
 router.get("/settings", admin.getSettings);
 router.put("/settings", admin.updateSettings);
 
+
+router.get("/analytics/advanced-stats", admin.getAdvancedStats);
+router.get("/analytics/revenue-by-type", admin.getRevenueByType);
+router.get("/analytics/revenue-by-plan", admin.getRevenueByPlan);
+router.get("/analytics/top-bureaus", admin.getTopBureaus);
+router.get("/analytics/revenue-by-dow", admin.getRevenueByDayOfWeek);
+
+
 module.exports = router;

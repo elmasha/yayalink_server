@@ -4,17 +4,17 @@ const {
   candidateKey,
   candidatesAvailableKey,
   candidatesCacheKey,
-  filterCacheKey,
 } = require("../utils/cacheKeys");
 const { computeBureauStatus } = require("../utils/subscription");
+const { deleteKeysByPattern } = require("../utils/redisHelpers");
 
 /* ─────────────── SUBSCRIPTION GUARD ─────────────── */
 
 /**
  * Verifies the bureau that owns this request has an active subscription.
- * Returns a promise resolving to:
- *   { ok: true }                     → continue
- *   { ok: false, code, message }     → block with 402
+ * Returns:
+ *   { ok: true, subscription }              → continue
+ *   { ok: false, code, message, subscription } → block with 402
  */
 function checkBureauSubscription(user_id) {
   return new Promise((resolve) => {
@@ -37,7 +37,7 @@ function checkBureauSubscription(user_id) {
           });
         }
 
-        // If the user_id isn't a bureau, allow it (could be an employer adding their own records)
+        // user_id isn't a bureau — allow (employer, admin, etc.)
         if (!rows || rows.length === 0) {
           return resolve({ ok: true, skipped: true });
         }
@@ -65,6 +65,7 @@ function checkBureauSubscription(user_id) {
             status: status.status,
             days_left: status.daysLeft,
             is_grace: status.isGrace,
+            expires_at: status.expiresAt,
           },
         });
       }
@@ -72,10 +73,22 @@ function checkBureauSubscription(user_id) {
   });
 }
 
+/* ─────────────── UTIL ─────────────── */
+
+function generateCandidateId() {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+  // Fallback for older Node
+  const hex = () => Math.floor(Math.random() * 16).toString(16);
+  const seg = (n) => Array.from({ length: n }, hex).join("");
+  return `${seg(8)}-${seg(4)}-4${seg(3)}-${seg(4)}-${seg(12)}`;
+}
+
 /* ✅ CREATE CANDIDATE */
 exports.createCandidate = async (req, res) => {
   const {
-    candidate_id,
+    candidate_id: incomingId,
     user_id,
     candidate_name,
     age,
@@ -106,6 +119,12 @@ exports.createCandidate = async (req, res) => {
     });
   }
 
+  if (!user_id) {
+    return res.status(400).json({
+      message: "user_id is required",
+    });
+  }
+
   // 🔒 Subscription check
   const guard = await checkBureauSubscription(user_id);
 
@@ -119,30 +138,15 @@ exports.createCandidate = async (req, res) => {
   }
 
   try {
+    // Generate candidate_id if the client didn't send one
+    const candidate_id = incomingId || generateCandidateId();
+
     const sql = `
       INSERT INTO yaya_candidates (
-        candidate_id,
-        user_id,
-        candidate_name,
-        age,
-        gender,
-        dob,
-        mobile_no,
-        kin_phone_no,
-        next_of_kin,
-        residence,
-        village,
-        ward,
-        county,
-        bureau_name,
-        bureau_no,
-        experience,
-        salary,
-        salary_period,
-        working_status,
-        status,
-        profile_image,
-        device_token
+        candidate_id, user_id, candidate_name, age, gender, dob, mobile_no,
+        kin_phone_no, next_of_kin, residence, village, ward, county,
+        bureau_name, bureau_no, experience, salary, salary_period,
+        working_status, status, profile_image, device_token
       ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `;
 
@@ -153,25 +157,25 @@ exports.createCandidate = async (req, res) => {
           candidate_id,
           user_id,
           candidate_name,
-          age,
+          age || null,
           gender,
-          dob,
+          dob || null,
           mobile_no,
-          kin_phone_no,
-          next_of_kin,
-          residence,
-          village,
-          ward,
-          county, // 👈 consider TRIM() here later
-          bureau_name,
-          bureau_no,
-          experience,
-          salary,
-          salary_period,
+          kin_phone_no || null,
+          next_of_kin || null,
+          residence || null,
+          village || null,
+          ward || null,
+          county,
+          bureau_name || null,
+          bureau_no || null,
+          experience || null,
+          salary || null,
+          salary_period || "Monthly",
           working_status || "available",
           status || "Available",
-          profile_image,
-          device_token,
+          profile_image || null,
+          device_token || null,
         ],
         (err) => {
           if (err) return reject(err);
@@ -183,10 +187,8 @@ exports.createCandidate = async (req, res) => {
     // 🔥 Invalidate Redis caches
     try {
       await redis.del(candidatesAvailableKey());
-      if (filterCacheKey) {
-        // Optional: pattern-based invalidation not supported by default Redis client.
-        // If you have a scan-based helper, call it here.
-      }
+      await redis.del(candidatesCacheKey());
+      await deleteKeysByPattern("candidates:filter:*");
     } catch (cacheErr) {
       console.warn("Redis clear error:", cacheErr.message);
     }
@@ -194,10 +196,18 @@ exports.createCandidate = async (req, res) => {
     return res.status(201).json({
       success: true,
       message: "Candidate added successfully",
+      candidate_id,
       subscription: guard.subscription || null,
     });
   } catch (error) {
     console.error("❌ Create candidate error:", error);
+
+    if (error.code === "ER_DUP_ENTRY") {
+      return res.status(409).json({
+        message: "Candidate ID collision — please retry",
+      });
+    }
+
     return res.status(500).json({ message: "Server error" });
   }
 };
@@ -250,8 +260,6 @@ exports.getBureauCandidateById = async (req, res) => {
     [req.params.user_id],
     async (err, rows) => {
       if (err) return res.status(500).json({ message: "Fetch failed" });
-      // NOTE: originally returned rows[0] — that's a bug for bureaus with multiple candidates.
-      // Returning the array is correct.
       await redis.setEx(key, 300, JSON.stringify(rows));
       res.json(rows);
     }
@@ -261,9 +269,6 @@ exports.getBureauCandidateById = async (req, res) => {
 /* ✅ UPDATE CANDIDATE */
 exports.updateCandidate = async (req, res) => {
   const { id } = req.params;
-
-  console.log("UPDATE CANDIDATE ID:", id);
-  console.log("UPDATE BODY:", req.body);
 
   if (!id) {
     return res.status(400).json({
@@ -329,7 +334,6 @@ exports.updateCandidate = async (req, res) => {
       next_of_kin = ?,
       kin_phone_no = ?,
       experience = ?,
-      user_id = ?,
       salary = ?,
       age = ?,
       bureau_name = ?,
@@ -353,7 +357,6 @@ exports.updateCandidate = async (req, res) => {
     next_of_kin || "",
     kin_phone_no || "",
     experience || 0,
-    user_id || "",
     salary || 0,
     age || 0,
     bureau_name || "",
@@ -367,15 +370,12 @@ exports.updateCandidate = async (req, res) => {
   db.query(sql, values, async (err, result) => {
     if (err) {
       console.error("updateCandidate DB error:", err);
-
       return res.status(500).json({
         success: false,
         message: "Failed to update candidate",
         error: err.message,
       });
     }
-
-    console.log("UPDATE RESULT:", result);
 
     if (result.affectedRows === 0) {
       return res.status(404).json({
@@ -388,8 +388,9 @@ exports.updateCandidate = async (req, res) => {
     try {
       await redis.del(candidateKey(id));
       await redis.del(candidatesAvailableKey());
+      await deleteKeysByPattern("candidates:filter:*");
     } catch (cacheErr) {
-      console.log("Redis clear error:", cacheErr.message);
+      console.warn("Redis clear error:", cacheErr.message);
     }
 
     return res.status(200).json({
@@ -434,6 +435,7 @@ exports.deleteCandidate = async (req, res) => {
       try {
         await redis.del(candidateKey(id));
         await redis.del(candidatesAvailableKey());
+        await deleteKeysByPattern("candidates:filter:*");
       } catch (cacheErr) {
         console.warn("Redis clear error:", cacheErr.message);
       }
@@ -483,7 +485,6 @@ exports.filterCandidates = async (req, res) => {
       params.push(gender);
     }
 
-    // ✅ Case + whitespace tolerant county match
     if (county) {
       sql += " AND LOWER(TRIM(county)) = LOWER(TRIM(?))";
       params.push(county);
@@ -524,7 +525,6 @@ exports.filterCandidates = async (req, res) => {
       params.push(Number(max_age));
     }
 
-    // ✅ Experience filter — cast to integer, ignore non-numeric
     if (min_experience) {
       sql += " AND CAST(experience AS UNSIGNED) >= ?";
       params.push(Number(min_experience));

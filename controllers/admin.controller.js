@@ -7,6 +7,8 @@ const {
 } = require("../utils/adminHelpers");
 const { sendNotification } = require("../utils/notify");
 const { computeBureauStatus } = require("../utils/subscription");
+const { deleteKeysByPattern } = require("../utils/redisHelpers");
+const { clearSettingsCache, PLANS } = require("../utils/settings");
 
 /* ─────────────────────────────────────────────
    CACHE HELPERS
@@ -17,11 +19,24 @@ const CACHE = {
   signups: "admin:dashboard:signups",
 };
 
+const A_CACHE = {
+  advanced:   "admin:analytics:advanced",
+  byType:     "admin:analytics:revenue_by_type",
+  byPlan:     "admin:analytics:revenue_by_plan",
+  topBureaus: "admin:analytics:top_bureaus",
+  byDow:      "admin:analytics:revenue_by_dow",
+};
+
 async function clearAdminCaches() {
   try {
     await redis.del(CACHE.summary);
     await redis.del(CACHE.revenue);
     await redis.del(CACHE.signups);
+    await redis.del(A_CACHE.advanced);
+    await redis.del(A_CACHE.byType);
+    await redis.del(A_CACHE.byPlan);
+    await redis.del(A_CACHE.topBureaus);
+    await redis.del(A_CACHE.byDow);
   } catch (err) {
     console.warn("clearAdminCaches failed:", err.message);
   }
@@ -49,24 +64,18 @@ exports.getDashboardSummary = async (req, res) => {
       suspended_bureaus,
       active_bureaus,
     ] = await Promise.all([
-      query(`SELECT COUNT(*) AS c FROM yaya_candidates`).then(
-        (r) => r[0].c || 0
-      ),
+      query(`SELECT COUNT(*) AS c FROM yaya_candidates`).then((r) => r[0].c || 0),
       query(
         `SELECT COUNT(*) AS c FROM yaya_candidates WHERE status='Available'`
       ).then((r) => r[0].c || 0),
       query(
         `SELECT COUNT(*) AS c FROM yaya_candidates WHERE status='Unavailable'`
       ).then((r) => r[0].c || 0),
-      query(`SELECT COUNT(*) AS c FROM yaya_employers`).then(
-        (r) => r[0].c || 0
+      query(`SELECT COUNT(*) AS c FROM yaya_employers`).then((r) => r[0].c || 0),
+      query(`SELECT COUNT(*) AS c FROM yaya_bureaus`).then((r) => r[0].c || 0),
+      query(`SELECT IFNULL(SUM(amount),0) AS s FROM yaya_payments`).then(
+        (r) => r[0].s || 0
       ),
-      query(`SELECT COUNT(*) AS c FROM yaya_bureaus`).then(
-        (r) => r[0].c || 0
-      ),
-      query(
-        `SELECT IFNULL(SUM(amount),0) AS s FROM yaya_payments`
-      ).then((r) => r[0].s || 0),
       query(
         `SELECT IFNULL(SUM(amount),0) AS s FROM yaya_payments
          WHERE MONTH(created_at)=MONTH(NOW())
@@ -121,7 +130,6 @@ exports.getRevenueChart = async (req, res) => {
        ORDER BY day ASC`
     );
 
-    // Fill missing days with zeros so the chart isn't gappy
     const map = new Map(rows.map((r) => [toDateKey(r.day), r]));
     const series = [];
 
@@ -210,6 +218,253 @@ exports.getTopCounties = async (req, res) => {
 };
 
 /* =========================================================
+   ADVANCED ANALYTICS
+   ========================================================= */
+
+/* ✅ ADVANCED KPI STATS */
+exports.getAdvancedStats = async (req, res) => {
+  try {
+    const cached = await redis.get(A_CACHE.advanced);
+    if (cached) return res.json(JSON.parse(cached));
+
+    const [
+      employerCount,
+      bureauCount,
+      activeEmployers,
+      activeBureaus,
+      churnedEmployers,
+      churnedBureaus,
+      totalRevenue,
+      payingEmployers,
+      payingBureaus,
+      repeatEmployers,
+      repeatBureaus,
+      candidateStats,
+    ] = await Promise.all([
+      query(`SELECT COUNT(*) AS c FROM yaya_employers`).then((r) => r[0].c || 0),
+      query(`SELECT COUNT(*) AS c FROM yaya_bureaus`).then((r) => r[0].c || 0),
+
+      query(
+        `SELECT COUNT(*) AS c FROM yaya_employers
+         WHERE access_expires_at IS NOT NULL AND access_expires_at > NOW()`
+      ).then((r) => r[0].c || 0),
+
+      query(
+        `SELECT COUNT(*) AS c FROM yaya_bureaus
+         WHERE ((access_expires_at IS NOT NULL AND access_expires_at > NOW())
+             OR (trial_ends_at IS NOT NULL AND trial_ends_at > NOW()))
+           AND (is_suspended IS NULL OR is_suspended = 0)`
+      ).then((r) => r[0].c || 0),
+
+      query(
+        `SELECT COUNT(*) AS c FROM yaya_employers
+         WHERE access_expires_at IS NOT NULL AND access_expires_at <= NOW()`
+      ).then((r) => r[0].c || 0),
+
+      query(
+        `SELECT COUNT(*) AS c FROM yaya_bureaus
+         WHERE access_expires_at IS NOT NULL AND access_expires_at <= NOW()`
+      ).then((r) => r[0].c || 0),
+
+      query(`SELECT IFNULL(SUM(amount),0) AS s FROM yaya_payments`).then(
+        (r) => Number(r[0].s) || 0
+      ),
+
+      query(
+        `SELECT COUNT(DISTINCT uid) AS c FROM yaya_payments WHERE user_type = 'EMPLOYER'`
+      ).then((r) => r[0].c || 0),
+
+      query(
+        `SELECT COUNT(DISTINCT uid) AS c FROM yaya_payments WHERE user_type = 'BUREAU'`
+      ).then((r) => r[0].c || 0),
+
+      query(
+        `SELECT COUNT(*) AS c FROM (
+           SELECT uid FROM yaya_payments WHERE user_type = 'EMPLOYER'
+           GROUP BY uid HAVING COUNT(*) > 1
+         ) AS t`
+      ).then((r) => r[0].c || 0),
+
+      query(
+        `SELECT COUNT(*) AS c FROM (
+           SELECT uid FROM yaya_payments WHERE user_type = 'BUREAU'
+           GROUP BY uid HAVING COUNT(*) > 1
+         ) AS t`
+      ).then((r) => r[0].c || 0),
+
+      query(
+        `SELECT
+           COUNT(*) AS total,
+           SUM(CASE WHEN status = 'Available' THEN 1 ELSE 0 END) AS available,
+           SUM(CASE WHEN status = 'Unavailable' THEN 1 ELSE 0 END) AS selected_count
+         FROM yaya_candidates`
+      ).then((r) => r[0] || {}),
+    ]);
+
+    const totalUsers = employerCount + bureauCount;
+    const totalPayers = payingEmployers + payingBureaus;
+    const conversionRate = totalUsers > 0 ? (totalPayers / totalUsers) * 100 : 0;
+
+    const totalChurned = churnedEmployers + churnedBureaus;
+    const churnBase = activeEmployers + activeBureaus + totalChurned;
+    const churnRate = churnBase > 0 ? (totalChurned / churnBase) * 100 : 0;
+
+    const arpu = totalPayers > 0 ? totalRevenue / totalPayers : 0;
+    const selectionRate =
+      candidateStats.total > 0
+        ? (candidateStats.selected_count / candidateStats.total) * 100
+        : 0;
+
+    const response = {
+      success: true,
+      total_users: totalUsers,
+      total_employers: employerCount,
+      total_bureaus: bureauCount,
+
+      paying_users: totalPayers,
+      paying_employers: payingEmployers,
+      paying_bureaus: payingBureaus,
+
+      active_employers: activeEmployers,
+      active_bureaus: activeBureaus,
+
+      churned_employers: churnedEmployers,
+      churned_bureaus: churnedBureaus,
+
+      repeat_employers: repeatEmployers,
+      repeat_bureaus: repeatBureaus,
+
+      total_revenue: totalRevenue,
+      arpu: Math.round(arpu * 100) / 100,
+      conversion_rate: Math.round(conversionRate * 10) / 10,
+      churn_rate: Math.round(churnRate * 10) / 10,
+      selection_rate: Math.round(selectionRate * 10) / 10,
+
+      total_candidates: candidateStats.total || 0,
+      available_candidates: candidateStats.available || 0,
+      selected_candidates: candidateStats.selected_count || 0,
+    };
+
+    await redis.setEx(A_CACHE.advanced, 300, JSON.stringify(response));
+    return res.json(response);
+  } catch (error) {
+    console.error("getAdvancedStats error:", error);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+};
+
+/* ✅ REVENUE BY USER TYPE */
+exports.getRevenueByType = async (req, res) => {
+  try {
+    const cached = await redis.get(A_CACHE.byType);
+    if (cached) return res.json(JSON.parse(cached));
+
+    const rows = await query(
+      `SELECT user_type,
+              IFNULL(SUM(amount),0) AS total,
+              COUNT(*) AS count
+       FROM yaya_payments
+       WHERE user_type IS NOT NULL
+       GROUP BY user_type`
+    );
+
+    const response = { success: true, data: rows };
+    await redis.setEx(A_CACHE.byType, 300, JSON.stringify(response));
+    return res.json(response);
+  } catch (error) {
+    console.error("getRevenueByType error:", error);
+    return res.status(500).json({ success: false, data: [] });
+  }
+};
+
+/* ✅ REVENUE BY PLAN */
+exports.getRevenueByPlan = async (req, res) => {
+  try {
+    const cached = await redis.get(A_CACHE.byPlan);
+    if (cached) return res.json(JSON.parse(cached));
+
+    const rows = await query(
+      `SELECT plan_days,
+              IFNULL(SUM(amount),0) AS total,
+              COUNT(*) AS count
+       FROM yaya_payments
+       WHERE plan_days IS NOT NULL
+       GROUP BY plan_days
+       ORDER BY plan_days ASC`
+    );
+
+    const response = { success: true, data: rows };
+    await redis.setEx(A_CACHE.byPlan, 300, JSON.stringify(response));
+    return res.json(response);
+  } catch (error) {
+    console.error("getRevenueByPlan error:", error);
+    return res.status(500).json({ success: false, data: [] });
+  }
+};
+
+/* ✅ TOP BUREAUS */
+exports.getTopBureaus = async (req, res) => {
+  try {
+    const cached = await redis.get(A_CACHE.topBureaus);
+    if (cached) return res.json(JSON.parse(cached));
+
+    const rows = await query(
+      `SELECT b.user_id,
+              b.bureau_name,
+              b.county,
+              b.user_state,
+              COUNT(DISTINCT c.candidate_id) AS candidate_count,
+              IFNULL(SUM(p.amount),0) AS revenue
+       FROM yaya_bureaus b
+       LEFT JOIN yaya_candidates c ON c.user_id = b.user_id
+       LEFT JOIN yaya_payments p ON p.uid = b.user_id AND p.user_type = 'BUREAU'
+       GROUP BY b.user_id, b.bureau_name, b.county, b.user_state
+       ORDER BY candidate_count DESC, revenue DESC
+       LIMIT 10`
+    );
+
+    const response = { success: true, data: rows };
+    await redis.setEx(A_CACHE.topBureaus, 300, JSON.stringify(response));
+    return res.json(response);
+  } catch (error) {
+    console.error("getTopBureaus error:", error);
+    return res.status(500).json({ success: false, data: [] });
+  }
+};
+
+/* ✅ REVENUE BY DAY OF WEEK */
+exports.getRevenueByDayOfWeek = async (req, res) => {
+  try {
+    const cached = await redis.get(A_CACHE.byDow);
+    if (cached) return res.json(JSON.parse(cached));
+
+    const rows = await query(
+      `SELECT DAYOFWEEK(created_at) AS dow,
+              IFNULL(SUM(amount),0) AS total,
+              COUNT(*) AS count
+       FROM yaya_payments
+       GROUP BY DAYOFWEEK(created_at)
+       ORDER BY dow ASC`
+    );
+
+    const dayNames = ["", "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const data = rows.map((r) => ({
+      day: dayNames[r.dow] || "?",
+      dow: r.dow,
+      total: Number(r.total),
+      count: Number(r.count),
+    }));
+
+    const response = { success: true, data };
+    await redis.setEx(A_CACHE.byDow, 300, JSON.stringify(response));
+    return res.json(response);
+  } catch (error) {
+    console.error("getRevenueByDayOfWeek error:", error);
+    return res.status(500).json({ success: false, data: [] });
+  }
+};
+
+/* =========================================================
    EMPLOYERS
    ========================================================= */
 
@@ -221,11 +476,7 @@ exports.getAllEmployers = async (req, res) => {
       defaultSort: "created_at",
     });
 
-    const allowedFilters = [
-      "county",
-      "city",
-      "is_suspended",
-    ];
+    const allowedFilters = ["county", "city", "is_suspended"];
 
     const { clauses, params } = buildFilterClauses(
       {
@@ -236,7 +487,6 @@ exports.getAllEmployers = async (req, res) => {
       allowedFilters
     );
 
-    // Search applies across name / email / phone
     if (search) {
       clauses.push("(name LIKE ? OR email LIKE ? OR phone_no LIKE ?)");
       params.push(`%${search}%`, `%${search}%`, `%${search}%`);
@@ -400,7 +650,6 @@ exports.suspendEmployer = async (req, res) => {
       });
     }
 
-    // If suspended, drop access caches so next check sees the new state
     try {
       await redis.del(`employer:access:${uid}`);
       await redis.del(`employer:payment:${uid}`);
@@ -513,7 +762,6 @@ exports.getAllBureaus = async (req, res) => {
       [...params, limit, offset]
     );
 
-    // Augment each row with computed subscription status
     const data = rows.map((b) => ({
       ...b,
       subscription: computeBureauStatus(b),
@@ -839,6 +1087,7 @@ exports.updateCandidate = async (req, res) => {
     "salary_period",
     "working_status",
     "status",
+    "date_selected",
   ];
 
   const updates = {};
@@ -911,11 +1160,9 @@ exports.deleteCandidate = async (req, res) => {
   }
 };
 
-
 /* =========================================================
    SETTINGS
    ========================================================= */
-const { clearSettingsCache, PLANS } = require("../utils/settings");
 
 exports.getSettings = async (req, res) => {
   try {
@@ -993,7 +1240,6 @@ exports.updateSettings = async (req, res) => {
   }
 };
 
-
 /* =========================================================
    PAYMENTS
    ========================================================= */
@@ -1016,7 +1262,6 @@ exports.getAllPayments = async (req, res) => {
       allowedFilters
     );
 
-    // Date range
     if (req.query.from) {
       clauses.push("created_at >= ?");
       params.push(req.query.from);
@@ -1075,7 +1320,7 @@ exports.getAllPayments = async (req, res) => {
 };
 
 /* =========================================================
-   SEARCH (kept for backwards compat)
+   SEARCH (backwards compat)
    ========================================================= */
 exports.searchCandidates = async (req, res) => {
   const { keyword } = req.query;
@@ -1106,7 +1351,6 @@ exports.searchCandidates = async (req, res) => {
    NOTIFICATIONS
    ========================================================= */
 
-/* ✅ SEND TO A SINGLE USER */
 exports.notifyUser = async (req, res) => {
   const { user_uid, user_type, title, message, type } = req.body;
 
@@ -1133,7 +1377,6 @@ exports.notifyUser = async (req, res) => {
   }
 };
 
-/* ✅ BROADCAST */
 exports.broadcast = async (req, res) => {
   const { audience, title, message, type } = req.body;
 
@@ -1199,7 +1442,7 @@ exports.broadcast = async (req, res) => {
    ========================================================= */
 exports.createCandidate = async (req, res) => {
   const {
-    user_id,           // bureau owner — REQUIRED
+    user_id,
     candidate_name,
     gender,
     dob,
@@ -1221,7 +1464,6 @@ exports.createCandidate = async (req, res) => {
     device_token,
   } = req.body;
 
-  /* ── Validation ── */
   if (!user_id) {
     return res.status(400).json({
       success: false,
@@ -1237,7 +1479,6 @@ exports.createCandidate = async (req, res) => {
   }
 
   try {
-    /* ── Verify bureau exists ── */
     const bureauRows = await query(
       `SELECT user_id, bureau_name, name, phone_no, county, city
        FROM yaya_bureaus
@@ -1255,10 +1496,8 @@ exports.createCandidate = async (req, res) => {
 
     const bureau = bureauRows[0];
 
-    /* ── Generate candidate_id ── */
     const candidate_id = generateCandidateId();
 
-    /* ── Insert ── */
     await query(
       `INSERT INTO yaya_candidates (
         candidate_id, user_id, candidate_name, gender, dob, mobile_no,
@@ -1291,11 +1530,9 @@ exports.createCandidate = async (req, res) => {
       ]
     );
 
-    /* ── Clear relevant caches ── */
     try {
       await redis.del("candidates:available");
       await redis.del(`candidate:${candidate_id}`);
-      // Also nuke filter caches
       await deleteKeysByPattern("candidates:filter:*");
     } catch (_) {}
 
@@ -1323,7 +1560,7 @@ exports.createCandidate = async (req, res) => {
   }
 };
 
-/* ── UUID-style generator (matches existing format) ── */
+/* ── UUID-style generator ── */
 function generateCandidateId() {
   const hex = () => Math.floor(Math.random() * 16).toString(16);
   const seg = (n) => Array.from({ length: n }, hex).join("");
