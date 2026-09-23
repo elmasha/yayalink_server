@@ -26,6 +26,7 @@ router.post("/bureaus/:uid/suspend", admin.suspendBureau);
 router.delete("/bureaus/:uid", admin.deleteBureau);
 
 /* ─── Candidates ─── */
+router.post("/candidates", admin.createCandidate);
 router.get("/candidates", admin.getAllCandidates);
 router.get("/candidates/search", admin.searchCandidates);
 router.get("/candidates/:id", admin.getCandidateDetail);

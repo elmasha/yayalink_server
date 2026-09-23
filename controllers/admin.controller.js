@@ -1112,6 +1112,142 @@ exports.broadcast = async (req, res) => {
 };
 
 /* =========================================================
+   CREATE CANDIDATE (admin)
+   ========================================================= */
+exports.createCandidate = async (req, res) => {
+  const {
+    user_id,           // bureau owner — REQUIRED
+    candidate_name,
+    gender,
+    dob,
+    mobile_no,
+    kin_phone_no,
+    next_of_kin,
+    residence,
+    village,
+    ward,
+    county,
+    bureau_name,
+    bureau_no,
+    experience,
+    salary,
+    salary_period,
+    working_status,
+    status,
+    profile_image,
+    device_token,
+  } = req.body;
+
+  /* ── Validation ── */
+  if (!user_id) {
+    return res.status(400).json({
+      success: false,
+      message: "user_id (bureau) is required",
+    });
+  }
+
+  if (!candidate_name || !mobile_no || !gender || !county) {
+    return res.status(400).json({
+      success: false,
+      message: "candidate_name, mobile_no, gender, and county are required",
+    });
+  }
+
+  try {
+    /* ── Verify bureau exists ── */
+    const bureauRows = await query(
+      `SELECT user_id, bureau_name, name, phone_no, county, city
+       FROM yaya_bureaus
+       WHERE user_id = ?
+       LIMIT 1`,
+      [user_id]
+    );
+
+    if (!bureauRows.length) {
+      return res.status(404).json({
+        success: false,
+        message: "Bureau not found",
+      });
+    }
+
+    const bureau = bureauRows[0];
+
+    /* ── Generate candidate_id ── */
+    const candidate_id = generateCandidateId();
+
+    /* ── Insert ── */
+    await query(
+      `INSERT INTO yaya_candidates (
+        candidate_id, user_id, candidate_name, gender, dob, mobile_no,
+        kin_phone_no, next_of_kin, residence, village, ward, county,
+        bureau_name, bureau_no, experience, salary, salary_period,
+        working_status, status, profile_image, device_token
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      [
+        candidate_id,
+        user_id,
+        candidate_name,
+        gender,
+        dob || null,
+        mobile_no,
+        kin_phone_no || null,
+        next_of_kin || null,
+        residence || null,
+        village || null,
+        ward || null,
+        county,
+        bureau_name || bureau.bureau_name || null,
+        bureau_no || bureau.phone_no || null,
+        experience || null,
+        salary || null,
+        salary_period || "Monthly",
+        working_status || "available",
+        status || "Available",
+        profile_image || null,
+        device_token || null,
+      ]
+    );
+
+    /* ── Clear relevant caches ── */
+    try {
+      await redis.del("candidates:available");
+      await redis.del(`candidate:${candidate_id}`);
+      // Also nuke filter caches
+      await deleteKeysByPattern("candidates:filter:*");
+    } catch (_) {}
+
+    await clearAdminCaches();
+
+    return res.status(201).json({
+      success: true,
+      message: "Candidate created successfully",
+      candidate_id,
+    });
+  } catch (error) {
+    console.error("createCandidate (admin) error:", error);
+
+    if (error.code === "ER_DUP_ENTRY") {
+      return res.status(409).json({
+        success: false,
+        message: "Candidate ID collision — please retry",
+      });
+    }
+
+    return res.status(500).json({
+      success: false,
+      message: "Server error",
+    });
+  }
+};
+
+/* ── UUID-style generator (matches existing format) ── */
+function generateCandidateId() {
+  const hex = () => Math.floor(Math.random() * 16).toString(16);
+  const seg = (n) => Array.from({ length: n }, hex).join("");
+  return `${seg(8)}-${seg(4)}-4${seg(3)}-${seg(4)}-${seg(12)}`;
+}
+
+/* =========================================================
    UTILS
    ========================================================= */
 
