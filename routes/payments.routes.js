@@ -7,5 +7,5 @@ const {
 
 router.post("/confirm",  confirmPayment);
 router.get("/status/:uid",  getPaymentStatus);
-router.get("/plans/:user_type", paymentsController.getPlans);   // 👈 NEW
+router.get("/plans/:user_type",  getPlans);   // 👈 NEW
 module.exports = router;
