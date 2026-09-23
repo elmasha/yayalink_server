@@ -911,6 +911,89 @@ exports.deleteCandidate = async (req, res) => {
   }
 };
 
+
+/* =========================================================
+   SETTINGS
+   ========================================================= */
+const { clearSettingsCache, PLANS } = require("../utils/settings");
+
+exports.getSettings = async (req, res) => {
+  try {
+    const rows = await query(
+      `SELECT \`key\`, \`value\`, \`updated_at\` FROM yaya_settings`
+    );
+
+    const settings = { employer: {}, bureau: {} };
+    const raw = {};
+
+    for (const row of rows) {
+      raw[row.key] = row.value;
+      const m = row.key.match(/^(employer|bureau)_plan_(\d+)_fee$/);
+      if (m) {
+        settings[m[1]][Number(m[2])] = Number(row.value);
+      }
+    }
+
+    return res.json({ success: true, settings, raw, plans: PLANS });
+  } catch (error) {
+    console.error("getSettings error:", error);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+};
+
+exports.updateSettings = async (req, res) => {
+  const { employer, bureau } = req.body;
+
+  if (!employer && !bureau) {
+    return res.status(400).json({
+      success: false,
+      message: "Provide employer and/or bureau settings",
+    });
+  }
+
+  const updates = [];
+
+  if (employer && typeof employer === "object") {
+    for (const [days, fee] of Object.entries(employer)) {
+      if (PLANS.EMPLOYER.includes(Number(days))) {
+        updates.push([`employer_plan_${days}_fee`, String(fee)]);
+      }
+    }
+  }
+
+  if (bureau && typeof bureau === "object") {
+    for (const [days, fee] of Object.entries(bureau)) {
+      if (PLANS.BUREAU.includes(Number(days))) {
+        updates.push([`bureau_plan_${days}_fee`, String(fee)]);
+      }
+    }
+  }
+
+  if (updates.length === 0) {
+    return res.status(400).json({ success: false, message: "No valid settings" });
+  }
+
+  try {
+    for (const [key, value] of updates) {
+      await query(
+        `INSERT INTO yaya_settings (\`key\`, \`value\`)
+         VALUES (?, ?)
+         ON DUPLICATE KEY UPDATE \`value\` = VALUES(\`value\`)`,
+        [key, value]
+      );
+    }
+
+    await clearSettingsCache();
+    await clearAdminCaches();
+
+    return res.json({ success: true, message: "Settings updated", updated: updates.length });
+  } catch (error) {
+    console.error("updateSettings error:", error);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+};
+
+
 /* =========================================================
    PAYMENTS
    ========================================================= */

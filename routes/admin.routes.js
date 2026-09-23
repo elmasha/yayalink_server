@@ -40,4 +40,9 @@ router.get("/payments", admin.getAllPayments);
 router.post("/notify/user", admin.notifyUser);
 router.post("/notify/broadcast", admin.broadcast);
 
+
+/* Settings */
+router.get("/settings", admin.getSettings);
+router.put("/settings", admin.updateSettings);
+
 module.exports = router;

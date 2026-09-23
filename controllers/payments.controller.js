@@ -1,6 +1,30 @@
 const db = require("../config/db");
 const redis = require("../config/redis");
 const { employerKey, graceKey } = require("../utils/cacheKeys");
+const { getPlans: getPlansFromSettings } = require("../utils/settings");
+
+/* ✅ GET PLANS FOR A USER TYPE */
+exports.getPlans = async (req, res) => {
+  const { user_type } = req.params;
+
+  if (!["EMPLOYER", "BUREAU"].includes(user_type)) {
+    return res.status(400).json({
+      success: false,
+      message: "Invalid user type",
+    });
+  }
+
+  try {
+    const plans = await getPlansFromSettings(user_type);
+    return res.json({ success: true, plans });
+  } catch (error) {
+    console.error("getPlans error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Server error",
+    });
+  }
+};
 
 exports.confirmPayment = async (req, res) => {
   const { uid, mpesa_receipt } = req.body;
