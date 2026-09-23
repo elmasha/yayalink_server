@@ -1,4 +1,3 @@
-// controllers/userRole.controller.js
 const db = require("../config/db");
 
 exports.getUserRole = async (req, res) => {
@@ -9,8 +8,8 @@ exports.getUserRole = async (req, res) => {
   }
 
   try {
-    // Check bureau first (fast)
-    const bureau = await new Promise((resolve, reject) => {
+    // Check bureau first
+    const bureauRows = await new Promise((resolve, reject) => {
       db.query(
         `SELECT user_id FROM yaya_bureaus WHERE user_id = ? LIMIT 1`,
         [uid],
@@ -18,12 +17,12 @@ exports.getUserRole = async (req, res) => {
       );
     });
 
-    if (bureau.length > 0) {
+    if (bureauRows.length > 0) {
       return res.json({ role: "bureau", uid });
     }
 
     // Check employer
-    const employer = await new Promise((resolve, reject) => {
+    const employerRows = await new Promise((resolve, reject) => {
       db.query(
         `SELECT uid FROM yaya_employers WHERE uid = ? LIMIT 1`,
         [uid],
@@ -31,7 +30,7 @@ exports.getUserRole = async (req, res) => {
       );
     });
 
-    if (employer.length > 0) {
+    if (employerRows.length > 0) {
       return res.json({ role: "employer", uid });
     }
 
