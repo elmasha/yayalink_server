@@ -3,6 +3,7 @@ const router = express.Router();
 const {
   confirmPayment,
   getPaymentStatus,
+  getPlans
 } = require("../controllers/payments.controller");
 
 router.post("/confirm",  confirmPayment);
