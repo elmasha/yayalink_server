@@ -18,6 +18,7 @@ app.use("/api/users", require("./routes/users.routes"));
  app.use("/api/bureaus", require("./routes/bureau.routes"));
  app.use("/api/candidates", require("./routes/candidates.routes"));
  app.use("/api/employers", require("./routes/employers.routes"));
+  app.use("/api/payment", require("./routes/payments.routes"));
  app.use("/api/payments", require("./payments/mpesa_stkpush"));
  app.use("/api/counties", require("./routes/counties.routes"));
 app.use("/api/employer-access", require("./routes/employerAccess.routes"));
