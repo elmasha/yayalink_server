@@ -22,12 +22,6 @@ const RATE_LIMITS = {
 // Cost estimate per SMS in KES
 const COST_PER_SMS = 0.8;
 
-// Retry config (application-level; Advanta has no native retry)
-const RETRY_CONFIG = {
-  maxAttempts: 2,      // 1 original + 1 retry
-  retryDelayMs: 5000,  // 5 seconds
-};
-
 /* ─────────────────────────────────────────────
    PHONE NORMALIZATION
    ───────────────────────────────────────────── */
@@ -151,9 +145,9 @@ function logSms({
 }
 
 /* ─────────────────────────────────────────────
-   SEND SMS (Advanta) — single attempt
+   SEND SMS (Advanta) — single attempt, no retry
    ───────────────────────────────────────────── */
-async function sendSmsAttempt({
+async function sendSms({
   phone,
   message,
   scenario,
@@ -293,31 +287,6 @@ async function sendSmsAttempt({
 }
 
 /* ─────────────────────────────────────────────
-   SEND SMS — with retry
-   ───────────────────────────────────────────── */
-async function sendSms(params) {
-  let attempt = 1;
-  let result = await sendSmsAttempt(params);
-
-  const retryable = ["EXCEPTION", "PROVIDER_FAILED"];
-
-  while (
-    !result.ok &&
-    retryable.includes(result.reason) &&
-    attempt < RETRY_CONFIG.maxAttempts
-  ) {
-    console.log(
-      `↻ SMS retry ${attempt}/${RETRY_CONFIG.maxAttempts - 1} for ${params.phone} in ${RETRY_CONFIG.retryDelayMs}ms`
-    );
-    await new Promise((r) => setTimeout(r, RETRY_CONFIG.retryDelayMs));
-    attempt += 1;
-    result = await sendSmsAttempt(params);
-  }
-
-  return result;
-}
-
-/* ─────────────────────────────────────────────
    SCENARIO 1 — CANDIDATE UPLOADED
    ───────────────────────────────────────────── */
 async function smsCandidateUploaded({ candidate_name, phone, bureau_name }) {
@@ -384,7 +353,7 @@ async function smsSubscriptionGrace({
       (err, rows) => {
         if (err) {
           console.warn("Grace dedup check failed:", err.message);
-          return resolve(false); // fail closed to avoid spam? we'll skip send
+          return resolve(false);
         }
         resolve(rows.length > 0);
       }
