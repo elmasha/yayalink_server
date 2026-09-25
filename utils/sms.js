@@ -381,11 +381,37 @@ async function smsSubscriptionGrace({
   });
 }
 
+/* ─────────────────────────────────────────────
+   OPTIONAL — SCENARIO 5: CANDIDATE DISCHARGED
+   Only use this if discharge can happen automatically
+   (i.e. the candidate may not know). If discharge is always
+   employer-initiated, prefer an in-app notification instead.
+   ───────────────────────────────────────────── */
+async function smsCandidateDischarged({
+  candidate_name,
+  phone,
+  employer_name,
+}) {
+  const message =
+    `Hi ${candidate_name || "there"}, your placement with ` +
+    `${employer_name || "your employer"} on YayaLink has ended. ` +
+    `Your profile is active again and employers can now see you. ` +
+    `Reply STOP to opt out.`;
+
+  return sendSms({
+    phone,
+    message,
+    scenario: "CANDIDATE_DISCHARGED",
+    user_type: "CANDIDATE",
+  });
+}
+
 module.exports = {
   sendSms,
   smsCandidateUploaded,
   smsCandidateSelected,
   smsSubscriptionGrace,
+  smsCandidateDischarged, // optional — only call if you actually want it
   normalizePhone,
-  checkSuppression, // exported so webhook route can reuse if needed
+  checkSuppression,
 };

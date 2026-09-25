@@ -5,8 +5,7 @@ const {
   candidateKey,
   candidatesAvailableKey,
 } = require("../utils/cacheKeys");
-
-
+const { smsCandidateDischarged } = require("../utils/sms");
 
 exports.selectCandidate = async (req, res) => {
   db.query(
@@ -27,7 +26,6 @@ exports.selectCandidate = async (req, res) => {
   );
 };
 
-
 exports.dischargeCandidate = async (req, res) => {
   const { id } = req.params;
   const { employer_uid, discharge_message } = req.body;
@@ -37,6 +35,22 @@ exports.dischargeCandidate = async (req, res) => {
   }
 
   try {
+    /* 🔎 1. Fetch candidate details BEFORE the UPDATE.
+       The UPDATE nulls employer_name, so we capture it now. */
+    const preRows = await new Promise((resolve, reject) => {
+      db.query(
+        `SELECT candidate_name, mobile_no, employer_name
+         FROM yaya_candidates
+         WHERE candidate_id = ?
+         LIMIT 1`,
+        [id],
+        (err, rows) => (err ? reject(err) : resolve(rows))
+      );
+    });
+
+    const pre = preRows[0] || null;
+
+    /* 🔄 2. Discharge */
     db.query(
       `
       UPDATE yaya_candidates
@@ -67,13 +81,28 @@ exports.dischargeCandidate = async (req, res) => {
           });
         }
 
-        /* 🔹 Clear Redis caches */
+        /* 🧹 3. Clear Redis caches */
         await redis.del(`candidate:${id}`);
         await redis.del("candidates:available");
 
         if (employer_uid) {
           await redis.del(`employer:candidates:${employer_uid}`);
           await redis.del(`employer:access:${employer_uid}`);
+        }
+
+        /* 🔔 4. SMS the candidate — fire-and-forget */
+        if (pre && pre.mobile_no) {
+          smsCandidateDischarged({
+            candidate_name: pre.candidate_name,
+            phone: pre.mobile_no,
+            employer_name: pre.employer_name,
+          }).catch((e) =>
+            console.warn("Discharge SMS failed:", e.message)
+          );
+        } else {
+          console.warn(
+            `Discharge: candidate ${id} has no mobile_no — skipping SMS`
+          );
         }
 
         return res.json({
@@ -86,8 +115,6 @@ exports.dischargeCandidate = async (req, res) => {
     return res.status(500).json({ message: "Server error" });
   }
 };
-
-
 
 exports.getEmployerCandidates = async (req, res) => {
   const { employer_uid } = req.params;
@@ -127,10 +154,8 @@ exports.getEmployerCandidates = async (req, res) => {
   }
 };
 
-
-
 exports.deleteEmployer = async (req, res) => {
-  const uid = req.params.uid; 
+  const uid = req.params.uid;
   db.query(
     `DELETE FROM yaya_employer WHERE user_id=?`,
     [uid],
@@ -212,8 +237,6 @@ exports.updateEmployerDeviceToken = async (req, res) => {
     });
   }
 };
-
-
 
 /* ✅ Register Employer */
 exports.createEmployer = async (req, res) => {
