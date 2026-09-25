@@ -1,6 +1,7 @@
 const db = require("../config/db");
 const redis = require("../config/redis");
 const { bureauKey } = require("../utils/cacheKeys");
+const { smsSubscriptionGrace } = require("../utils/sms");
 const {
   computeBureauStatus,
   TRIAL_DAYS,
@@ -243,7 +244,8 @@ exports.getBureauPaymentStatus = async (req, res) => {
 
     db.query(
       `SELECT mpesa_receipt, payment_date, trial_ends_at,
-              access_expires_at, subscription_status, last_payment_amount
+              access_expires_at, subscription_status, last_payment_amount,
+              name, bureau_name, phone_no, grace_started_at
        FROM yaya_bureaus WHERE user_id = ? LIMIT 1`,
       [user_id],
       async (err, rows) => {
@@ -283,6 +285,40 @@ exports.getBureauPaymentStatus = async (req, res) => {
               ? "GRACE_PERIOD"
               : "SUBSCRIPTION_EXPIRED",
         };
+
+        /* 🔔 Grace SMS — stamp grace_started_at once, then fire once per period */
+        if (status.isGrace) {
+          db.query(
+            `UPDATE yaya_bureaus
+             SET grace_started_at = NOW()
+             WHERE user_id = ? AND grace_started_at IS NULL`,
+            [user_id]
+          );
+
+          db.query(
+            `SELECT bureau_name, name, phone_no, grace_started_at
+             FROM yaya_bureaus
+             WHERE user_id = ?
+             LIMIT 1`,
+            [user_id],
+            (e, r) => {
+              if (e || !r.length) {
+                console.warn("Bureau grace SMS lookup failed:", e && e.message);
+                return;
+              }
+              smsSubscriptionGrace({
+                name: r[0].bureau_name || r[0].name,
+                phone: r[0].phone_no,
+                user_type: "BUREAU",
+                days_left: status.daysLeft,
+                user_uid: user_id,
+                grace_started_at: r[0].grace_started_at,
+              }).catch((er) =>
+                console.warn("Bureau grace SMS failed:", er.message)
+              );
+            }
+          );
+        }
 
         // Cache 30s while trial/active, 5min when expired
         const ttl = status.isExpired ? 300 : 30;
@@ -330,7 +366,8 @@ exports.activateBureauSubscription = (user_id, amount, receipt, callback) => {
              user_state = 'ACTIVE',
              mpesa_receipt = ?,
              payment_date = NOW(),
-             last_payment_amount = ?
+             last_payment_amount = ?,
+             grace_started_at = NULL
          WHERE user_id = ?`,
         [newExpiry, receipt, amount, user_id],
         async (updateErr) => {

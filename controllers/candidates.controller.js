@@ -7,6 +7,7 @@ const {
 } = require("../utils/cacheKeys");
 const { computeBureauStatus } = require("../utils/subscription");
 const { deleteKeysByPattern } = require("../utils/redisHelpers");
+const { smsCandidateUploaded } = require("../utils/sms");
 
 /* ─────────────── SUBSCRIPTION GUARD ─────────────── */
 
@@ -19,7 +20,6 @@ const { deleteKeysByPattern } = require("../utils/redisHelpers");
 function checkBureauSubscription(user_id) {
   return new Promise((resolve) => {
     if (!user_id) {
-      // No user_id provided — treat as non-bureau request (public read, etc.)
       return resolve({ ok: true, skipped: true });
     }
 
@@ -79,7 +79,6 @@ function generateCandidateId() {
   if (typeof crypto !== "undefined" && crypto.randomUUID) {
     return crypto.randomUUID();
   }
-  // Fallback for older Node
   const hex = () => Math.floor(Math.random() * 16).toString(16);
   const seg = (n) => Array.from({ length: n }, hex).join("");
   return `${seg(8)}-${seg(4)}-4${seg(3)}-${seg(4)}-${seg(12)}`;
@@ -193,6 +192,16 @@ exports.createCandidate = async (req, res) => {
       console.warn("Redis clear error:", cacheErr.message);
     }
 
+    // 🔔 Fire-and-forget SMS to the uploaded candidate
+    // Use the bureau_name from req.body only — the `bureau` object doesn't exist here.
+    smsCandidateUploaded({
+      candidate_name,
+      phone: mobile_no,
+      bureau_name: bureau_name || "A bureau",
+    }).catch((err) =>
+      console.warn("Candidate upload SMS failed:", err.message)
+    );
+
     return res.status(201).json({
       success: true,
       message: "Candidate added successfully",
@@ -300,7 +309,6 @@ exports.updateCandidate = async (req, res) => {
     status,
   } = req.body;
 
-  // 🔒 Subscription check — user_id is required to authorize the action
   if (!user_id) {
     return res.status(400).json({
       success: false,

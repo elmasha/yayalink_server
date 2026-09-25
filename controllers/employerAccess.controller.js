@@ -4,6 +4,10 @@ const { isGracePeriodValid } = require("../utils/gracePeriod");
 const { sendNotification } = require("../utils/notify");
 const { getDaysRemaining } = require("../utils/paymentUtils");
 const {
+  smsCandidateSelected,
+  smsSubscriptionGrace,
+} = require("../utils/sms");
+const {
   candidateKey,
   candidatesAvailableKey,
   candidatesCacheKey,
@@ -77,6 +81,38 @@ exports.checkEmployerAccess = async (req, res) => {
 
       if (now >= expiry) {
         console.log("⏰ Access expired. Revoking employer:", uid);
+
+        /* 🔔 2a. Grace SMS — stamp grace_started_at once, then fire once per period */
+        db.query(
+          `UPDATE yaya_employers
+           SET grace_started_at = NOW()
+           WHERE uid = ? AND grace_started_at IS NULL`,
+          [uid]
+        );
+
+        db.query(
+          `SELECT name, phone_no, grace_started_at
+           FROM yaya_employers
+           WHERE uid = ?
+           LIMIT 1`,
+          [uid],
+          (e, r) => {
+            if (e || !r.length) {
+              console.warn("Grace SMS lookup failed:", e && e.message);
+              return;
+            }
+            smsSubscriptionGrace({
+              name: r[0].name,
+              phone: r[0].phone_no,
+              user_type: "EMPLOYER",
+              days_left: 0,
+              user_uid: uid,
+              grace_started_at: r[0].grace_started_at,
+            }).catch((er) =>
+              console.warn("Grace SMS failed:", er.message)
+            );
+          }
+        );
 
         /* 🔥 Revoke payment */
         try {
@@ -228,6 +264,35 @@ exports.checkEmployerPaymentStatus = async (req, res) => {
             (err) => (err ? reject(err) : resolve())
           );
         });
+
+        /* 🔔 2b. Grace SMS — same guard as checkEmployerAccess */
+        db.query(
+          `UPDATE yaya_employers
+           SET grace_started_at = NOW()
+           WHERE uid = ? AND grace_started_at IS NULL`,
+          [uid]
+        );
+
+        db.query(
+          `SELECT name, phone_no, grace_started_at
+           FROM yaya_employers
+           WHERE uid = ?
+           LIMIT 1`,
+          [uid],
+          (e, r) => {
+            if (e || !r.length) return;
+            smsSubscriptionGrace({
+              name: r[0].name,
+              phone: r[0].phone_no,
+              user_type: "EMPLOYER",
+              days_left: 0,
+              user_uid: uid,
+              grace_started_at: r[0].grace_started_at,
+            }).catch((er) =>
+              console.warn("Grace SMS failed:", er.message)
+            );
+          }
+        );
 
         try {
           await redis.del(PAYMENT_CACHE_KEY(uid));
@@ -410,6 +475,25 @@ exports.selectCandidate = async (req, res) => {
         }
       );
     });
+
+    /* 🔔 4b. SMS the candidate — fire-and-forget, never blocks the response */
+    db.query(
+      `SELECT candidate_name, mobile_no
+       FROM yaya_candidates
+       WHERE candidate_id = ?
+       LIMIT 1`,
+      [candidate_id],
+      (err, rows) => {
+        if (err || !rows.length) {
+          console.warn("Selection SMS lookup failed:", err && err.message);
+          return;
+        }
+        smsCandidateSelected({
+          candidate_name: rows[0].candidate_name,
+          phone: rows[0].mobile_no,
+        }).catch((e) => console.warn("Selection SMS failed:", e.message));
+      }
+    );
 
     /* 🔹 5. Clear ALL relevant caches */
     try {
