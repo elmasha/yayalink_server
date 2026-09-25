@@ -52,5 +52,7 @@ router.get("/analytics/revenue-by-plan", admin.getRevenueByPlan);
 router.get("/analytics/top-bureaus", admin.getTopBureaus);
 router.get("/analytics/revenue-by-dow", admin.getRevenueByDayOfWeek);
 
+/* SMS Balance */
+router.get("/sms/balance", admin.getSmsBalance);
 
 module.exports = router;

@@ -9,7 +9,7 @@ const { sendNotification } = require("../utils/notify");
 const { computeBureauStatus } = require("../utils/subscription");
 const { deleteKeysByPattern } = require("../utils/redisHelpers");
 const { clearSettingsCache, PLANS } = require("../utils/settings");
-
+const { getSmsBalance } = require("../utils/sms");
 /* ─────────────────────────────────────────────
    CACHE HELPERS
    ───────────────────────────────────────────── */
@@ -41,6 +41,31 @@ async function clearAdminCaches() {
     console.warn("clearAdminCaches failed:", err.message);
   }
 }
+
+// getSmsBalance: returns { ok: true, balance: number, currency: string } or { ok: false, reason: string }
+exports.getSmsBalance = async (req, res) => {
+  try {
+    const result = await getSmsBalance();
+
+    if (!result.ok) {
+      return res.status(500).json({
+        success: false,
+        message: "Could not fetch SMS balance",
+        reason: result.reason,
+      });
+    }
+
+    return res.json({
+      success: true,
+      balance: result.balance,
+      currency: result.currency,
+    });
+  } catch (error) {
+    console.error("getSmsBalance error:", error);
+    return res.status(500).json({ success: false });
+  }
+};
+
 
 /* =========================================================
    DASHBOARD

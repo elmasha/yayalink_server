@@ -406,8 +406,46 @@ async function smsCandidateDischarged({
   });
 }
 
+
+async function getSmsBalance() {
+  if (!AT_API_KEY || !AT_PARTNER_ID) {
+    return { ok: false, reason: "NOT_CONFIGURED" };
+  }
+
+  try {
+    const response = await axios.post(
+      "https://quicksms.advantasms.com/api/services/getbalance/",
+      {
+        apikey: AT_API_KEY,
+        partnerID: AT_PARTNER_ID,
+      },
+      {
+        headers: { "Content-Type": "application/json" },
+        timeout: 15000,
+      }
+    );
+
+    const body = response.data || {};
+    const credit = body.credit || body.balance || "0";
+
+    return {
+      ok: true,
+      balance: Number(credit) || 0,
+      currency: "KES",
+      raw: body,
+    };
+  } catch (err) {
+    const msg = err.response?.data
+      ? JSON.stringify(err.response.data).slice(0, 255)
+      : err.message;
+    console.error("SMS balance check error:", msg);
+    return { ok: false, reason: "EXCEPTION", detail: msg };
+  }
+}
+
 module.exports = {
   sendSms,
+  getSmsBalance,
   smsCandidateUploaded,
   smsCandidateSelected,
   smsSubscriptionGrace,
